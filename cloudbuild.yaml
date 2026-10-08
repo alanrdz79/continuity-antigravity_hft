@@ -21,3 +21,6 @@ steps:
           docker run -d -p 80:8080 --name antigravity-app --restart always us-central1-docker.pkg.dev/$PROJECT_ID/antigravity-repo/app:$SHORT_SHA &&
           docker image prune -a -f
         "
+
+options:
+  logging: CLOUD_LOGGING_ONLY
