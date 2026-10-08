@@ -60,6 +60,7 @@ from continuitis.tesoreria import (
 )
 TesoreriaBinance = GestorTesoreria  # Alias formal contract PROJECT.md
 
+from continuitis.state_registry import StateRegistrySQLite
 from continuitis.auditor_metricas import (
     AuditorMetricas,
     TradeResult,
@@ -70,13 +71,6 @@ from estrategias.hft_engine import (
     HftSignal,
     MatchLiveState,
     SportType,
-)
-
-from estrategias.swing_engine import (
-    AsyncCapitalGateway,
-    CapitalReservationToken,
-    SwingAnalysisResult,
-    SwingEngine,
 )
 
 from conectores.telegram_bidireccional import (
@@ -127,6 +121,18 @@ class ContinuityHFTBinanceOrchestrator:
         # ----------------------------------------------------------------------
         # INICIALIZACIÓN DE SUBMÓDULOS DE ARQUITECTURA
         # ----------------------------------------------------------------------
+        # 0. State Registry (SQLite WAL)
+        self.state_registry = StateRegistrySQLite()
+
+        # Intentar cargar balance previo
+        saved_balance = self.state_registry.get_state("balance")
+        if saved_balance:
+            try:
+                self.capital_inicial = float(saved_balance)
+                logger.info(f"[StateRegistry] Balance previo cargado: {self.capital_inicial} USD")
+            except ValueError:
+                pass
+
         # 1. Conector Binance Spot
         self.binance_client: BinancePredictionConnector = BinancePredictionConnector(
             api_key=api_key,
@@ -159,11 +165,6 @@ class ContinuityHFTBinanceOrchestrator:
             factor_atenuacion_racha=0.85,
         )
 
-        # 6. Pasarela de Capital Concurrente Atómica (Protección contra doble asignación)
-        self.capital_gateway: AsyncCapitalGateway = AsyncCapitalGateway(
-            capital_total=self.capital_inicial,
-            max_cluster_exp=0.15,
-        )
 
         # 7. Motor Cuantitativo HFT (4 Fases, Estrategias A y B)
         self.hft_engine: HFTEngine = HFTEngine(
@@ -172,13 +173,6 @@ class ContinuityHFTBinanceOrchestrator:
             tick_size=DEFAULT_TICK_SIZE,
         )
 
-        # 8. Motor Ortogonal de Swing Trading
-        self.swing_engine: SwingEngine = SwingEngine(
-            risk_engine=self.risk_engine,
-            capital_gateway=self.capital_gateway,
-            balance=self.capital_inicial,
-            max_cluster_exp=0.15,
-        )
 
         # 9. Bot Bidireccional de Telegram
         self.telegram_bot: TelegramBidireccionalBot = TelegramBidireccionalBot(
@@ -202,26 +196,15 @@ class ContinuityHFTBinanceOrchestrator:
                 match_id=f"MATCH_{sym}",
                 symbol=sym,
                 sport=SportType.SOCCER,
-                time_to_kickoff_minutes=60.0,
-                is_live=False,
+                time_to_kickoff_minutes=None, # None indicates it is live or we don't know yet
+                is_live=True, # Start assuming live to get L2 tracking
             )
 
-        # Mapeo de histórico simulado para swing
-        self._swing_history: Dict[str, List[Tuple[float, float, float, float, float]]] = {}
-        for sym in self.symbols:
-            # Historial sintético base de 50 velas
-            base_p = 0.50
-            candles = []
-            for i in range(50):
-                p = round(base_p + (i * 0.002), 4)
-                candles.append((p, p + 0.01, p - 0.01, p, 100.0))
-            self._swing_history[sym] = candles
 
         # Tareas de segundo plano
         self._tasks: List[asyncio.Task] = []
         self._orderbook_task: Optional[asyncio.Task] = None
         self._hft_task: Optional[asyncio.Task] = None
-        self._swing_task: Optional[asyncio.Task] = None
         self._telegram_task: Optional[asyncio.Task] = None
         self._summary_task: Optional[asyncio.Task] = None
 
@@ -278,19 +261,6 @@ class ContinuityHFTBinanceOrchestrator:
         for sym in self.symbols:
             self.hft_engine.limpiar_mesa_prematch(sym)
 
-        # 4. Limpiar órdenes y posiciones en SwingEngine
-        if hasattr(self, "swing_engine") and self.swing_engine is not None:
-            if hasattr(self.swing_engine, "active_positions"):
-                self.swing_engine.active_positions.clear()
-            if hasattr(self.swing_engine, "pending_orders"):
-                self.swing_engine.pending_orders.clear()
-
-        # 5. Liberar reservas de capital en capital_gateway
-        if hasattr(self, "capital_gateway") and self.capital_gateway is not None:
-            for tok in list(self.capital_gateway.active_tokens.values()):
-                tok.is_released = True
-            self.capital_gateway.active_tokens.clear()
-            self.capital_gateway.capital_comprometido = 0.0
 
         # 6. Registrar notificación de emergencia en TelegramBot
         msg_kill = f"🚨 KILL SWITCH ACTIVADO: Operación detenida inmediatamente ({motivo})."
@@ -345,8 +315,6 @@ class ContinuityHFTBinanceOrchestrator:
         elif param_clean in ("max_cluster", "max_cluster_exp"):
             if 0.01 <= val <= 0.30:
                 self.risk_engine.max_cluster_exp = val
-                self.capital_gateway.max_cluster_exp = val
-                self.swing_engine.capital_gateway.max_cluster_exp = val
                 return {"exito": True, "param": param_clean, "nuevo_valor": val}
             return {"exito": False, "motivo": "Rango permitido para max_cluster: [0.01, 0.30] (1% a 30%)"}
 
@@ -378,9 +346,24 @@ class ContinuityHFTBinanceOrchestrator:
     def ejecutar_cosecha_o_auditoria(self) -> Dict[str, Any]:
         """Ejecuta la auditoría de hitos de tesorería y cosecha autónoma."""
         res = self.tesoreria.verificar_hitos()
-        # Sincronizar capital gateway con el balance actualizado de tesorería
-        asyncio.create_task(self.capital_gateway.actualizar_capital_total(self.tesoreria.balance))
         return res
+
+
+    def get_exposicion_cluster(self) -> float:
+        # Calcular exposición actual
+        exposicion = 0.0
+        for pos in self.hft_engine.active_positions.values():
+            if pos.status == "OPEN":
+                exposicion += (pos.entry_price * pos.quantity)
+        return exposicion
+
+    async def reservar_capital(self, stake: float, strategy_id: str, symbol: str) -> Any:
+        # Retorna un "token" mockeado
+        return {"stake": stake, "symbol": symbol, "is_released": False}
+
+    async def liberar_capital(self, token: Any) -> None:
+        if isinstance(token, dict):
+            token["is_released"] = True
 
     # --------------------------------------------------------------------------
     # PIPELINE CONCURRENTE: TAREA 1 (ORDER BOOK LISTENER TASK)
@@ -463,12 +446,15 @@ class ContinuityHFTBinanceOrchestrator:
         if not snap.is_valid:
             return None
 
-        match_state = self.live_matches.get(
-            symbol,
-            MatchLiveState(match_id=f"M_{symbol}", symbol=symbol, time_to_kickoff_minutes=60.0),
-        )
+        match_state = self.live_matches.get(symbol)
+        if not match_state:
+            match_state = MatchLiveState(match_id=f"M_{symbol}", symbol=symbol, is_live=True, time_to_kickoff_minutes=None)
+            self.live_matches[symbol] = match_state
 
         balance = self.tesoreria.balance
+        # 0. Vigilar y cerrar posiciones activas según libro
+        await self._vigilar_y_cerrar_posiciones_abiertas(symbol, snap)
+
         # 1. Evaluar señal con HFTEngine
         senal: HftSignal
         if match_state.is_prematch:
@@ -477,7 +463,7 @@ class ContinuityHFTBinanceOrchestrator:
                 match_state=match_state,
                 balance=balance,
                 operaciones_activas=len(self.hft_engine.active_positions),
-                exposicion_cluster=self.capital_gateway.capital_comprometido,
+                exposicion_cluster=self.get_exposicion_cluster(),
             )
         else:
             senal = self.hft_engine.evaluar_mercado_completo(
@@ -485,13 +471,13 @@ class ContinuityHFTBinanceOrchestrator:
                 match_state=match_state,
                 balance=balance,
                 operaciones_activas=len(self.hft_engine.active_positions),
-                exposicion_cluster=self.capital_gateway.capital_comprometido,
+                exposicion_cluster=self.get_exposicion_cluster(),
             )
 
         # 2. Si la señal está autorizada, reservar capital atómicamente y colocar orden
         if senal.authorized and senal.action in ("LIMIT_BUY", "MARKET_BUY", "BUY_LIMIT", "BUY_MARKET", "BUY"):
             costo_estimado = senal.price * senal.quantity
-            token = await self.capital_gateway.reservar_capital(
+            token = await self.reservar_capital(
                 stake=costo_estimado,
                 strategy_id=senal.strategy_id,
                 symbol=symbol,
@@ -517,133 +503,12 @@ class ContinuityHFTBinanceOrchestrator:
                     executed_qty=senal.quantity,
                 )
 
-                # Simulación de salida de micro-scalp inmediata en mock
-                if self.mock_mode:
-                    await self._simular_cierre_hft_mock(pos, token)
             else:
                 logger.debug(f"[HFT] Rechazada por techo de clúster de capital: {symbol}")
 
         return senal
 
-    async def _simular_cierre_hft_mock(self, pos: Any, token: CapitalReservationToken) -> None:
-        """Simula el llenado del take-profit y el cierre del trade en modo mock."""
-        # Margen de beneficio capturado (1 tick)
-        pnl = round(pos.quantity * self.micro_engine.tick_size, 4)
-        is_win = pnl >= 0.0
 
-        # Cerrar posición en motor HFT
-        self.hft_engine.cerrar_posicion(pos.position_id, exit_price=pos.entry_price + self.micro_engine.tick_size)
-
-        # Liberar token de capital
-        await self.capital_gateway.liberar_capital(token)
-
-        # Registrar resultado en tesorería y auditor
-        trade_id = f"HFT_{pos.position_id}"
-        trade = TradeResult(
-            trade_id=trade_id,
-            symbol=pos.symbol,
-            stake=pos.entry_price * pos.quantity,
-            pnl=pnl,
-            is_win=is_win,
-            timestamp=time.time(),
-        )
-        self.tesoreria.registrar_trade(trade)
-        self.risk_engine.registrar_resultado(is_win)
-
-        # Auditar progreso de tesorería (inyección de $100 / cosecha)
-        hitos = self.tesoreria.verificar_hitos()
-        if "INYECCION_100_USD_APLICADA" in hitos.get("acciones", []):
-            await self.telegram_bot.notificar_inyeccion_capital(
-                monto=100.0,
-                nuevo_balance=self.tesoreria.balance,
-                info_validacion=hitos.get("detalle_validacion", {}),
-            )
-
-    # --------------------------------------------------------------------------
-    # PIPELINE CONCURRENTE: TAREA 3 (SWING STRATEGY TASK)
-    # --------------------------------------------------------------------------
-    async def _swing_strategy_task(self) -> None:
-        """
-        Tarea 3: Ejecución de Swing Trading complementario y ortogonal.
-        Descarga análisis macro intensivo (Monte Carlo) a hilos con asyncio.to_thread
-        para prevenir la degradación de latencia del bucle de eventos.
-        """
-        logger.info("[PIPELINE] SwingStrategyTask iniciada.")
-        try:
-            while self.is_running:
-                if not self.is_paused and not self.kill_switch_triggered:
-                    for sym in self.symbols:
-                        await self.step_swing_cycle(sym)
-
-                await asyncio.sleep(self.swing_cycle_interval_s)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            logger.info("[PIPELINE] SwingStrategyTask finalizada.")
-
-    async def step_swing_cycle(self, symbol: str) -> Optional[SwingAnalysisResult]:
-        """
-        Paso individual de evaluación y ejecución Swing para un símbolo.
-        """
-        if self.is_paused or self.kill_switch_triggered:
-            return None
-
-        velas = self._swing_history.get(symbol, [])
-        if len(velas) < 10:
-            return None
-
-        # 1. Cómputo CPU intensivo offloaded vía asyncio.to_thread
-        analysis = await self.swing_engine.analizar_oportunidad_macro(
-            symbol=symbol,
-            velas_historicas=velas,
-            sim_paths=500,  # Reducido para agilidad en loop
-        )
-
-        # 2. Evaluación de riesgo y reserva atómica
-        snap = await self.binance_client.get_orderbook_snapshot(symbol)
-        top3_bids_vol = (
-            GoldenRulesValidator.calcular_liquidez_escape_top3_bids(snap.bids)
-            if snap.is_valid
-            else None
-        )
-
-        pos_swing = await self.swing_engine.evaluar_y_ejecutar_orden_swing(
-            analysis=analysis,
-            balance=self.tesoreria.balance,
-            operaciones_activas=len(self.swing_engine.active_positions),
-            top_3_bids_vol=top3_bids_vol,
-        )
-
-        # 3. Simulación de ejecución en mock
-        if pos_swing is not None and self.mock_mode:
-            await self._simular_cierre_swing_mock(pos_swing)
-
-        return analysis
-
-    async def _simular_cierre_swing_mock(self, pos: Any) -> None:
-        """Simula el cierre de una posición swing en modo mock."""
-        pnl = round(pos.stake * 0.05, 4)  # 5% de ganancia en swing
-        is_win = True
-
-        closed_pos = await self.swing_engine.cerrar_posicion(
-            position_id=pos.position_id,
-            exit_price=pos.target_price,
-            is_win=is_win,
-        )
-
-        if closed_pos is not None:
-            trade = TradeResult(
-                trade_id=f"SWING_{closed_pos.position_id}",
-                symbol=closed_pos.symbol,
-                stake=closed_pos.stake,
-                pnl=pnl,
-                is_win=is_win,
-                timestamp=time.time(),
-            )
-            self.tesoreria.registrar_trade(trade)
-            self.risk_engine.registrar_resultado(is_win)
-
-    # --------------------------------------------------------------------------
     # PIPELINE CONCURRENTE: TAREA 4 (TELEGRAM LISTENER TASK)
     # --------------------------------------------------------------------------
     async def _telegram_listener_task(self) -> None:
@@ -704,9 +569,6 @@ class ContinuityHFTBinanceOrchestrator:
         self._hft_task = asyncio.create_task(
             self._hft_strategy_task(), name="HFTStrategyTask"
         )
-        self._swing_task = asyncio.create_task(
-            self._swing_strategy_task(), name="SwingStrategyTask"
-        )
         self._telegram_task = asyncio.create_task(
             self._telegram_listener_task(), name="TelegramListenerTask"
         )
@@ -717,7 +579,6 @@ class ContinuityHFTBinanceOrchestrator:
         self._tasks = [
             self._orderbook_task,
             self._hft_task,
-            self._swing_task,
             self._telegram_task,
             self._summary_task,
         ]
