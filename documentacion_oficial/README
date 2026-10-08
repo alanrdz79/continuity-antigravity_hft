@@ -1,0 +1,425 @@
+# PACIFICO KyJ — Ecosistema CONTINUITY
+
+**Plataforma de analítica predictiva y gestión de riesgo para apuestas deportivas, operada por un solo desarrollador bajo condiciones reales de capital y tiempo limitados.**
+
+> Este documento es la fuente única de verdad sobre qué existe hoy en el proyecto, cómo se conectan las piezas, y qué falta. Se generó auditando directamente el código fuente entregado (no solo la documentación previa), por lo que incluye una sección de **hallazgos de auditoría** que señala diferencias entre lo documentado y lo que el código realmente hace.
+
+---
+
+## Tabla de contenidos
+
+1. [Visión general](#1-visión-general)
+2. [Filosofía y principios de diseño](#2-filosofía-y-principios-de-diseño)
+3. [Mapa del ecosistema](#3-mapa-del-ecosistema)
+4. [Índice de archivos fuente](#4-índice-de-archivos-fuente)
+5. [Componentes del sistema](#5-componentes-del-sistema)
+6. [CONTINUITY — el motor predictivo, capa por capa](#6-continuity--el-motor-predictivo-capa-por-capa)
+7. [TACDE — marco teórico propio](#7-tacde--marco-teórico-propio)
+8. [Gestión financiera y control de riesgo](#8-gestión-financiera-y-control-de-riesgo)
+9. [Ligas y fases de cobertura](#9-ligas-y-fases-de-cobertura)
+10. [Modelo de datos (cerebrillum.db)](#10-modelo-de-datos-cerebrillumdb)
+11. [Roadmap del proyecto (Fase 0–5)](#11-roadmap-del-proyecto-fase-05)
+12. [Deuda técnica activa y gaps documentados](#12-deuda-técnica-activa-y-gaps-documentados)
+13. [Hallazgos de auditoría de esta revisión](#13-hallazgos-de-auditoría-de-esta-revisión)
+14. [Ética y fuentes de datos](#14-ética-y-fuentes-de-datos)
+15. [Stack tecnológico](#15-stack-tecnológico)
+16. [Cómo ejecutar el sistema](#16-cómo-ejecutar-el-sistema)
+17. [Convenciones de desarrollo](#17-convenciones-de-desarrollo)
+18. [Validación estadística — siguiente frontera analítica](#18-validación-estadística--siguiente-frontera-analítica)
+
+---
+
+## 1. Visión general
+
+PACIFICO KyJ (antes AEGIST/AEGIST MATRIX) es un sistema de decisión cuantitativa para apuestas de fútbol que combina:
+
+- Un **motor estocástico-estadístico** (Dixon-Coles + Poisson bivariado) con una capa de **machine learning** (Random Forest + Gradient Boosting) y **aprendizaje online** (EWMA adaptativo).
+- Una **capa de datos ETL** propia sobre SQLite, con deduplicación determinista y trazabilidad completa de cada carga.
+- Una **capa financiera** de gestión de riesgo (Kelly fraccionado, descuento de overround, penalización por rachas adversas).
+- Una **interfaz de control** en Streamlit que reduce la carga cognitiva de operar el sistema en producción, partido a partido.
+
+El objetivo del ecosistema no es "ganarle al mercado" con una caja negra, sino **construir un sistema auditable, incremental y honesto sobre sus propios límites**: cada ajuste queda documentado con el problema que resuelve, y cada capacidad no implementada se declara explícitamente en vez de simularse.
+
+Visión Final:Tener un Ecosistema establecido con herramientas totalmente maduro y automatizado siendo funcionalmente optimo con valor y con la confianza en el aseguramiento y capacidad de generar rentabilidad siendo percibida con arquitectura propiareduciendo gastos operativos  y herramientas externas manteniendo la ganancia por encima funcionando en conjunto disminuyendo la carga y la revisión constante humana 
+---
+
+## 2. Filosofía y principios de diseño
+
+Estos principios están verificados en el código (docstrings, comentarios de versión, estructura de gaps) y gobiernan cualquier cambio futuro:
+
+| Principio | Cómo se expresa en el código |
+|---|---|
+| **Verificar antes de corregir** | Ningún gap se "arregla" sin antes demostrar con datos que existe (ver Fase 0). |
+| **Simplicidad sobre complejidad** | Ajustes nuevos se aplican como multiplicadores *post-blend* (p. ej. `factor_tabla_posiciones`, `factor_intensidad_adaptativa_tacde`) en vez de reentrenar modelos — evita invalidar `.pkl`/Parquet ya calibrados. |
+| **Desarrollo por fases con evidencia** | `FASE_1_NAFTA` y `FASE_2_EUROPA` en `CONTINUITY.py` son literalmente el gate: no se opera una liga hasta que tiene datos e infraestructura suficiente. |
+| **Cambios quirúrgicos, no scope-creep** | Cada gap (`GAP1`…`GAP13`, `TACDE T-1`…`T-7`) tiene un número, un docstring de "qué resuelve" y compatibilidad regresiva declarada. |
+| **La base de datos es la fuente de verdad, no la UI** | `pacificokyj.py` nunca calcula estado de negocio por sí mismo; siempre delega a `CONTINUITY` o consulta `cerebrillum.db`. |
+| **Documentar los huecos, no ocultarlos** | `factor_arbitro = 3.5` (constante) se mantiene así **a propósito**, con una justificación matemática escrita en el propio código (ver §12). |
+
+---
+
+## 3. Mapa del ecosistema
+
+```
+                          ┌───────────────────────────┐
+                          │   football-data.co.uk      │
+                          │  (CSV estáticos, sin login) │
+                          └──────────────┬─────────────┘
+                                         │
+                       ┌─────────────────▼─────────────────┐
+                       │   diana.py  (Capa 1b — Captura)     │
+                       │   descarga automática de CSV        │
+                       │   formato "main" (EU) + "extra" (AM) │
+                       └─────────────────┬─────────────────┘
+                                         │ csv_data/*.csv
+                       ┌─────────────────▼─────────────────┐
+                       │  CEREBELLIUM.py (Capa 2 — ETL)      │
+                       │  hash SHA-1 · batch insert · etl_log │
+                       └─────────────────┬─────────────────┘
+                                         │
+                       ┌─────────────────▼─────────────────┐
+                       │        cerebrillum.db (SQLite/WAL)   │
+                       │  historial_partidos · historial_hot  │
+                       │  cuotas_1x2 / ou / ah · dim_equipos   │
+                       └───────┬─────────────────┬───────────┘
+                               │                 │
+             ┌─────────────────▼───┐   ┌─────────▼─────────────┐
+             │  CONTINUITY.py        │   │  pacificokyj.py         │
+             │  motor predictivo      │◄──┤  UI / orquestador        │
+             │  Capas 1–10 (ver §6)   │   │  Streamlit (8 módulos)   │
+             └────────────────────────┘   └──────────────────────────┘
+
+                       PURGA.py — mantenimiento transversal
+                       (limpia caches/Parquet/.pkl bajo demanda,
+                        nunca se ejecuta automáticamente)
+```
+
+---
+
+## 4. Índice de archivos fuente
+
+| Archivo | Versión declarada | Rol en el ecosistema | Capa(s) |
+|---|---|---|---|
+| `requirements.txt` | — | Dependencias Python fijadas (Streamlit, sklearn, pandas, pyarrow…) | Infraestructura |
+| `Notas_sobre_los_datos_de_fútbol.txt` | — | Diccionario de columnas de football-data.co.uk (claves de resultados, cuotas 1X2/O-U/hándicap asiático) | Referencia de datos |
+| `Herramientas_o_Modulos_del_Ecosistema...` | — | Glosario conceptual del proyecto en español, incluye módulos fuera de este repo (INVapuestas) | Documentación |
+| `NORMA_1_-_ESTANDARIZACION...py` | — | Norma interna: nomenclatura de archivos sin sufijos de versión; versión va en el docstring | Gobernanza de código |
+| `diana.py` | v1.0 | Captura automática de CSVs desde football-data.co.uk | Capa 1b |
+| `CEREBELLIUM.py` | v4.1 | ETL, esquema SQLite, deduplicación, vista `historial_hot` | Capa 2 |
+| `CONTINUITY.py` | v4.6 | Motor predictivo completo: estado adaptativo → inferencia → Dixon-Coles → Kelly → auditoría → backtest | Capas 1–10 |
+| `pacificokyj.py` | v5.1 | Interfaz Streamlit / orquestador de todo el flujo operativo | UI + Capa 8 (parcial) |
+| `PURGA.py` | v1.0 | Limpieza de cachés (Parquet, `__pycache__`, caché de Streamlit) y del modelo `.pkl` | Mantenimiento transversal |
+
+**Módulos mencionados en la documentación pero sin archivo `.py` verificado en este repositorio** (tratarlos como diseño, no como código operativo):
+
+- `ARGUS-FEED` / `ARGUS-PORTFOLIO` — daemon de odds en vivo + Kelly de portafolio con penalización de correlación.
+- `GAIA.py` — normalización geográfica de nombres de equipo.
+- `contimarquets.py` — mercados de hándicap asiático, corners y tiros O/U.
+
+
+---
+
+## 5. Componentes del sistema
+
+### 5.1 `diana.py` — Captura automática (Capa 1b)
+
+Reemplaza únicamente el paso manual de "ir a buscar el archivo" en football-data.co.uk; **no toca la decisión de qué se importa** (eso sigue siendo responsabilidad de CEREBELLIUM/Capa 2).
+
+- Dos formatos de descarga: `"main"` (un CSV por temporada: `E0, SP1, I1, D1, F1, N1, E2`) y `"extra"` (histórico único acumulativo: `MEX, USA`).
+- **Resolución dinámica de temporada vigente** (`_resolver_temporada_vigente`): en vez de un corte fijo por mes (que se rompe cada año), hace una petición real contra `E0.csv` y retrocede una temporada si el sitio aún no publicó la entrante. Esto ya evitó un fallo de producción documentado (404 en 7 ligas por corte de mes fijo).
+- Liga MX y MLS no reciben tratamiento especial de Clausura/Apertura aquí — eso lo resuelve `_liga_id_americano()` en CEREBELLIUM al momento de importar.
+- `champions_league` y `concacaf_cl` están **excluidas intencionalmente**: football-data.co.uk no las distribuye. Se documenta para no fallar en silencio.
+- Se integra con CEREBELLIUM de forma opcional y segura (`try/except` con fallback de logging propio si CEREBELLIUM no está disponible).
+- CLI: `--historico N`, `--forzar`, `--importar`, `--carpeta`. Pensado para `schtasks` diario en Windows.
+
+### 5.2 `CEREBELLIUM.py` — ETL y estructura de datos (Capa 2)
+
+- **Deduplicación por hash SHA-1** (`_hash_fila`) de `(fecha, local_id, visita_id)`, calculado *antes* de tocar la base — evita `IntegrityError` y permite reportar duplicados exactos sin escrituras desperdiciadas.
+- **Batch insert** con `executemany()` cada `BATCH_SIZE=500` filas (3–5× más rápido que insertar fila por fila en archivos grandes).
+- **`etl_log`**: tabla de trazabilidad de cada corrida (archivo, insertados, duplicados, errores, hash de la corrida).
+- **Doble formato de CSV**: europeo (`HomeTeam/AwayTeam/FTHG/FTAG`) vs. americano (`Home/Away/HG/AG`), detectado automáticamente por las columnas presentes.
+- **`historial_hot`**: `VIEW` (no tabla) que expone solo las temporadas más recientes para mantener baja la latencia de las consultas del motor en producción, sin duplicar almacenamiento.
+- Esquema completo: `dim_ligas`, `dim_equipos`, `historial_partidos`, `cuotas_1x2`, `cuotas_ou`, `cuotas_ah`, `etl_log`, y `cola_partidos_pendientes` (ver hallazgo de auditoría §13.1).
+
+### 5.3 `CONTINUITY.py` — Motor predictivo (Capas 1–10)
+
+El corazón analítico del proyecto. Ver desglose completo en §6.
+
+### 5.4 `pacificokyj.py` — Interfaz de control (UI)
+
+Orquestador Streamlit con 8 módulos de navegación, cada uno mapeado 1:1 a una responsabilidad operativa:
+
+| Módulo | Qué hace | Capas de CONTINUITY que invoca |
+|---|---|---|
+| **RADAR** | Estado de temporada por liga (activa/receso/liguilla/playoffs), avisos de parón FIFA y Mundial | Ninguna (solo calendario) |
+| **INFERENCIA** | Formulario de partido → pipeline completo → probabilidades 1X2 + O/U → señal Kelly | 1 a 8 |
+| **CIERRE** | Registra el resultado real, cierra el lazo de feedback y el ROI monetario | 9, 9b |
+| **DASHBOARD** | Curva de P&L de la sesión, EV por partido, tasa de acierto real (por mercado apostado, no por "ganó el local") | 9b (lectura) |
+| **ETL** | Importación de CSVs desde `csv_data/` con selector dinámico de archivos | Capa 2 (CEREBELLIUM) |
+| **AUDITORIA** | Integridad de tablas/vistas de la base, últimas importaciones | Capa 2 |
+| **PIPELINE** | Vista de "salud" en vivo de cada capa del motor (activo/parcial/offline) | Todas (solo lectura de estado) |
+| **RENTABILIDAD** | ROI real global y por liga, sugerencia de reponderación del blend por ROI atribuido, backtesting walk-forward bajo demanda | 9b, 10 |
+
+Puntos de diseño relevantes:
+- La conexión a SQLite se abre una sola vez (`@st.cache_resource`) en modo **WAL**, apta para lecturas concurrentes con escritura activa.
+- Todos los módulos importan `CONTINUITY`/`CEREBELLIUM` con `try/except`; si fallan, la UI sigue funcionando en modo degradado con avisos explícitos en vez de crashear.
+- La cola de partidos inferidos-pero-no-cerrados vive en `st.session_state` (ver hallazgo crítico en §13.1).
+
+### 5.5 `PURGA.py` — Mantenimiento transversal
+
+Utilidad de dos fases, ejecutada manualmente (no hay cron/scheduler dentro del propio archivo):
+
+1. Purga cachés: Parquet de `feature_store/`, `__pycache__`, caché interno de Streamlit.
+2. Elimina `modelos_rf/motor_ia.pkl` para forzar reentrenamiento limpio.
+
+La regla estructural es explícita en el propio código: **cachés primero, modelo al final** — evita que un reentrenamiento lea features viejas por accidente.
+
+---
+
+## 6. CONTINUITY — el motor predictivo, capa por capa
+
+CONTINUITY se describe como "10 capas" en la documentación de alto nivel, pero el código implementa **13 unidades funcionales** (incluyendo sub-capas 2a/2b/6b/9b), cada una con responsabilidad única:
+
+| Capa | Clase | Responsabilidad | Persistencia |
+|---|---|---|---|
+| 1 | `EstadoAdaptativo` | Inercia de ataque/defensa por equipo (EWMA lento) | `state.json` |
+| 2a | `MotorOnline` | Ganancia adaptativa por equipo (`alpha_din`), MAE reciente por liga | `state_online.json` |
+| 2b | `BlendAdaptativo` | Pondera RF vs. Online por MAE reciente (softmax inverso), con nudge opcional por ROI atribuido | `state_blend.json` |
+| 3 | `FeatureStore` | Caché Parquet de features por liga (TTL 24h), invalidación por **esquema**, no solo por conteo de filas | `feature_store/*.parquet` |
+| 4 | `DataPipeline` | Extracción de dataset, construcción de features, tabla de posiciones real, variables TACDE | `cerebrillum.db` |
+| 5 | `MotorInferenciaIA` | RF (300 árboles) + GBM opcional, un modelo global + uno por liga si hay ≥50 registros | `modelos_rf/motor_ia.pkl` |
+| 6 | `AjustadorCuantico` | Blend de xG reciente, penalización térmica/fatiga/rojas, factores post-blend por tabla y por TACDE | — |
+| 6b | `RhoDinamicoCalculator` | ρ de Dixon-Coles como función endógena del MAE del sistema y de la apertura ofensiva del partido | — |
+| 7 | `TransmutadorEstocastico` | Matriz de Poisson bivariado con corrección τ de Dixon-Coles; deriva 1X2 y Over/Under de la misma matriz | — |
+| 8 | `EscudoFinanciero` | Kelly fraccionado (25%), overround descontado, filtro doble EV+edge, penalización por racha de derrotas | — |
+| 9 | `RegistradorFeedback` | Lazo cerrado: error de lambda real vs. predicha, congela/actualiza estado según anomalía | `state*.json` |
+| 9b | `AuditorRentabilidad` | ROI real por liga/global, racha de derrotas, ROI segmentado por predictor líder (RF vs. Online) | `state_roi.json` |
+| 10 | `Backtester` | Simulación walk-forward contra cuotas históricas reales, con alcance metodológico explícitamente acotado | — |
+
+**Por qué esta arquitectura es defendible:**
+- **Ningún ajuste nuevo invalida el modelo ya entrenado.** Tabla de posiciones (Capa 6/GAP6) y TACDE (Capa 6/T-4) se aplican como multiplicadores acotados *después* del blend, nunca como features nuevas del RF — evita el costo de reentrenar cada vez que se agrega una señal.
+- **El ρ de Dixon-Coles dejó de ser una constante inventada.** Antes era fija por liga; ahora responde al estado real del sistema (MAE reciente + tensión ofensiva del partido), permaneciendo siempre negativo por fundamento empírico (Dixon & Coles, 1997).
+- **La responsabilidad de "qué tan grande es la apuesta" está separada de "cuál mercado tiene valor".** `evaluar_con_racha()` envuelve `evaluar_triple()` sin modificar su lógica de selección de mercado — solo escala el stake.
+
+### Backtester — alcance declarado (Capa 10)
+
+Vale la pena citarlo explícitamente porque es un ejemplo del estándar de honestidad técnica que sigue el proyecto:
+
+- **Sí mide:** la lógica financiera completa (Kelly + overround + filtro de edge) contra cuotas reales históricas, con walk-forward estricto (ningún partido usa datos de su propio futuro).
+- **No mide:** el componente RF/GBM (requeriría reentrenar en cada corte temporal), el ρ dinámico (depende de estado secuencial del sistema completo), ni los factores de tabla/TACDE.
+- Conclusión explícita en el propio docstring: responde a *"¿la capa financiera sería rentable contra cuotas reales con una lambda simple?"*, no a *"¿el sistema completo sería rentable?"*.
+
+---
+
+## 7. TACDE — marco teórico propio
+
+**Teoría de la Adaptación Competitiva Dinámica Evolutiva.** Modela cómo la posición en tabla y la urgencia temporal modifican el rendimiento esperado de un equipo más allá de su nivel técnico histórico.
+
+Cuatro variables, todas en `[0,1]`:
+
+| Variable | Significado | Corrección aplicada en v4.6 vs. el borrador original |
+|---|---|---|
+| **PA** (Presión Adaptativa) | Déficit de puntos-por-partido frente al límite de descenso (o frente al líder, en ligas sin descenso) | Ya no usa `puntos_max_temporada` (sesgaba a 0 al final de temporada) |
+| **RC** (Riesgo Clasificatorio) | Distancia normalizada a la posición límite | Se invirtió el signo: alto RC = alto riesgo real |
+| **IA** (Intensidad Adaptativa) | `PA × RC` modulada por urgencia temporal (`jornada / total_jornadas`) | Incluye el modulador de urgencia que faltaba en el borrador |
+| **EC** (Efecto de Confianza) | Racha de victorias consecutivas recientes | Ya no es `1 − PA` (evita colinealidad perfecta con PA) |
+
+El resultado se convierte en un multiplicador de lambda acotado a `[0.75, 1.25]` (`TACDE_FACTOR_MIN/MAX`), aplicado después de la tabla de posiciones (GAP6) y antes del cálculo de ρ dinámico, para que la correlación de Dixon-Coles refleje la tensión ofensiva ya ajustada.
+
+**Estado de calibración:** los coeficientes (`TACDE_ALPHA_IA=0.08`, `TACDE_ALPHA_EC=0.05`) son conservadores por diseño y están pendientes de calibración empírica una vez `AuditorRentabilidad` acumule ≥100 apuestas etiquetadas con señal TACDE activa.
+
+---
+
+## 8. Gestión financiera y control de riesgo
+
+- **Kelly fraccionado al 25%** (`KELLY_FRACTION`) sobre el mercado de mayor EV entre los tres resultados 1X2 (y, de forma independiente, sobre Over/Under 2.5).
+- **Doble filtro antes de operar:** `EV_THRESHOLD = 0.05` (5%) **y** `MIN_EDGE_REQUERIDO = 0.02` (2% frente a la probabilidad implícita de mercado ya limpia de overround). Un EV positivo aislado puede originarse en sobreconfianza del modelo frente a un mercado ya eficiente; exigir ambos reduce falsos positivos.
+- **Overround descontado matemáticamente**, no estimado: `normalizar_probabilidades_mercado()` divide cada probabilidad implícita bruta entre la suma total de las tres, exponiendo el margen real de la casa.
+- **Penalización por racha de derrotas** (`factor_penalizacion_racha`): reduce el stake linealmente (`ALPHA_RACHA=0.15` por derrota consecutiva) con piso en 30% del tamaño original — nunca deja de operar mientras el EV siga siendo positivo, porque no hay forma de distinguir ruido estadístico normal de un cambio real de régimen solo con el conteo de la racha.
+- **Atribución de rentabilidad por predictor** (GAP8): el ROI real se segmenta entre apuestas donde lideraba RF vs. donde lideraba el Online, permitiendo un *nudge* acotado (±10 puntos porcentuales, `NUDGE_MAX`) sobre el blend — nunca lo reemplaza, porque el ROI solo tiene atribución de grupo, no atribución directa como el MAE.
+
+---
+
+## 9. Ligas y fases de cobertura
+
+```python
+FASE_1_NAFTA = {liga_mx_clausura, liga_mx_apertura, concacaf_cl, mls}
+FASE_2_EUROPA = {premier_league, la_liga, serie_a, eredivisie,
+                  bundesliga, ligue_1, champions_league, league_one}
+```
+
+- El desbloqueo de Fase 2 está condicionado a evidencia documentada de Fase 1, no a preferencia.
+- `champions_league` y `concacaf_cl` tienen datos históricos vía `historial_partidos`/`cuotas_*` pero **no reciben CSVs automáticos de `diana.py`** — football-data.co.uk no las distribuye. Cualquier dato de estas dos ligas debe cargarse manualmente.
+
+---
+
+## 10. Modelo de datos (`cerebrillum.db`)
+
+| Tabla / Vista | Tipo | Propósito |
+|---|---|---|
+| `dim_ligas` | Tabla | Metadatos por liga: ρ base, λ base ataque/defensa, promedio de goles histórico |
+| `dim_equipos` | Tabla | ELO, prestigio histórico, altitud del estadio, capacidad |
+| `historial_partidos` | Tabla | Histórico completo, incluye `hash_fila` para deduplicación |
+| `historial_hot` | **VIEW** | Ventana activa (pensada para ser las últimas `HOT_WINDOW` temporadas) — consumida por el motor en producción para mantener baja la latencia |
+| `cuotas_1x2` / `cuotas_ou` / `cuotas_ah` | Tablas | Cuotas de mercado por partido, esquema variable según columnas presentes en el CSV origen |
+| `etl_log` | Tabla | Trazabilidad de cada corrida de importación |
+| `cola_partidos_pendientes` | Tabla | Diseñada para persistir partidos inferidos-pero-no-cerrados (ver §13.1 — **actualmente no está en uso**) |
+
+---
+
+## 11. Roadmap del proyecto (Fase 0–5)
+
+| Fase | Objetivo | Estado |
+|---|---|---|
+| **Fase 0** | Corregir 3 bugs documentados antes de tocar cualquier otra cosa | Parches diseñados, **no aplicados** (ver §12) |
+| **Fase 1** | Cierre automático de resultados vía API-Football | No iniciada |
+| **Fase 2** | Cuotas pre-partido vía The Odds API + tracking de CLV | No iniciada |
+| **Fase 3** | Daemon ARGUS-FEED en vivo → dispara migración a MySQL | No iniciada (gate: conflictos de escritura concurrentes reales, no antes) |
+| **Fase 4** | Kelly a nivel de portafolio con penalización por correlación | No iniciada |
+| **Fase 5** | Mercados secundarios (hándicap asiático, corners, O/U de tiros) | No iniciada |
+
+**Regla de bloqueo explícita:** SQLite + WAL es adecuado *hasta que* ARGUS-FEED cause conflictos de escritura reales como daemon persistente — no antes. Migrar a MySQL prematuramente sería complejidad sin beneficio medible.
+
+---
+
+## 12. Deuda técnica activa y gaps documentados
+
+Estos tres bugs de Fase 0 están **diseñados pero no aplicados** según la documentación del proyecto. La auditoría de esta revisión (§13) confirma el estado real de cada uno contra el código entregado:
+
+1. **SLUG-DESYNC** — `pacificokyj._normalizar_equipo_id()` normaliza distinto que `CEREBELLIUM._slug()` (la UI solo reemplaza espacio y guion; el ETL también reemplaza `.`, `'` y `/`). **Confirmado presente en el código actual** (§13.3).
+2. **`historial_hot` bug** — la vista usa `LIMIT 4` fijo en SQL, ignorando la constante `HOT_WINDOW = 2`, y no particiona por liga (top-4 temporadas *global*, no por `liga_id`). **Confirmado presente en el código actual** (§13.4).
+3. **`factor_arbitro = 3.5`** — constante de varianza cero, **deferida a propósito**: el RF nunca aprendió señal de esta columna (ningún split del árbol depende de ella), así que no hay *distribution shift* entre entrenamiento e inferencia. Corregirla de verdad requiere capturar árbitro real por partido y reentrenar — cambio de alcance mayor, correctamente fuera de esta fase.
+
+---
+
+## 13. Hallazgos de auditoría de esta revisión
+
+Estos hallazgos provienen de leer el código fuente entregado línea por línea, no de la documentación acumulada. Se incluyen porque el proyecto valora explícitamente la detección de discrepancias antes de asumir que algo "ya se arregló".
+
+### 13.1 — `cola_partidos_pendientes` existe en el esquema pero no está conectada (crítico)
+
+`CEREBELLIUM.py` define la tabla `cola_partidos_pendientes` con el comentario `[v4.6-GAP13]`, describiendo exactamente el problema de volatilidad de `st.session_state`. **Sin embargo**, revisando `pacificokyj.py`, las funciones `_cola_get()`, `_cola_append()` y `_cola_remove()` siguen operando exclusivamente sobre `st.session_state["cola_partidos"]` — no hay ninguna llamada SQL hacia esa tabla en todo el archivo.
+
+**Impacto:** la migración de la cola a persistencia real en base de datos está a medio camino: el destino existe, pero la fuente (UI) nunca escribe ahí. Un reinicio del proceso Streamlit sigue perdiendo cualquier inferencia no cerrada, exactamente el problema que la tabla fue creada para resolver.
+
+**Recomendación:** antes de dar esto por resuelto en cualquier registro del proyecto, verificar si existe una versión más reciente de `pacificokyj.py` que sí escriba en `cola_partidos_pendientes`. Si no existe, este es el siguiente parche quirúrgico lógico de Fase 0 — bajo el mismo principio de "verificar antes de corregir": la tabla ya está lista, solo falta cablear tres funciones.
+
+### 13.2 — `DIV_LIGA` ya incluye `E2` (contradice el docstring de `diana.py`)
+
+`diana.py` documenta el gap como pendiente: *"DIV_LIGA en CEREBELLIUMv4.py no incluye 'E2' (League One)... Parche sugerido (no aplicado automáticamente)"*. Pero el `DIV_LIGA` real en `CEREBELLIUM.py` entregado **ya incluye** `"E2": "league_one"`.
+
+**Impacto:** ninguno funcional (el sistema ya soporta League One vía CSV automático). Es puramente una inconsistencia de documentación: el comentario en `diana.py` quedó desactualizado después de que el parche se aplicara en `CEREBELLIUM.py`.
+
+**Recomendación:** actualizar el docstring de `diana.py` para no describir como pendiente un gap que ya está cerrado — mantiene la confianza en la documentación de gaps como fuente de verdad.
+
+### 13.3 — SLUG-DESYNC confirmado en el código actual
+
+Confirmado por lectura directa:
+
+```python
+# CEREBELLIUM._slug()
+for ch in [" ", "-", ".", "'", "/"]:
+    s = s.replace(ch, "_")
+
+# pacificokyj._normalizar_equipo_id()
+slug = raw.replace(" ", "_").replace("-", "_")   # falta ".", "'", "/"
+```
+
+Un equipo con apóstrofe o punto en el nombre (p. ej. `"Nott'm Forest"` o `"St. Etienne"`) generaría un `equipo_id` distinto según si entra por el ETL o si se escribe manualmente en el formulario de INFERENCIA — silenciosamente fragmentando el historial de ese equipo en dos identidades.
+
+### 13.4 — `historial_hot` sigue con `LIMIT 4` global, no por liga
+
+```sql
+CREATE VIEW IF NOT EXISTS historial_hot AS
+SELECT * FROM historial_partidos
+WHERE temporada IN (
+    SELECT DISTINCT temporada FROM historial_partidos
+    ORDER BY temporada DESC LIMIT 4
+)
+```
+
+Esto selecciona las 4 temporadas más recientes **de todo el sistema combinado**, no las 4 más recientes de cada liga. Si una liga tiene temporadas etiquetadas de forma distinta a otra (p. ej. `"2025-26"` vs. `"2025/2026"` sin normalizar), o si una liga arrancó su historial más tarde que otras, puede quedar completamente fuera de la ventana "hot" aunque tenga datos recientes — exactamente el bug ya documentado en el proyecto, confirmado aún sin aplicar.
+
+---
+
+## 14. Ética y fuentes de datos
+
+- **football-data.co.uk** es la fuente primaria: CSVs estáticos, sin necesidad de scraping ni credenciales.
+- **Flashscore** tiene prohibición explícita de descarga automatizada en sus términos de servicio — descartado como fuente.
+- Escalón de acceso a datos en vivo, ya acordado:
+  1. **Nivel 1** — APIs de resultado final con capa gratuita (API-Football). *Es donde está el proyecto hoy.*
+  2. **Nivel 2** — Casi tiempo real, requiere revisión de ToS antes de implementar.
+  3. **Nivel 3** — Datos en vivo/in-play — diferido indefinidamente.
+
+---
+
+## 15. Stack tecnológico
+
+| Categoría | Herramienta | Rol |
+|---|---|---|
+| UI / orquestación | Streamlit 1.58 | Interfaz de control operativo |
+| Base de datos | SQLite (WAL) | Fuente de verdad actual; MySQL planeado tras el trigger de Fase 3 |
+| ML | scikit-learn 1.8 (RandomForest, GradientBoosting, TimeSeriesSplit) | Capa 5 |
+| Datos | pandas 3.0, numpy 2.4, pyarrow 24.0 | ETL, features, caché Parquet |
+| Persistencia de modelos | joblib | `motor_ia.pkl` |
+| Visualización | plotly 6.7 | Dashboard financiero |
+| HTTP | requests | Descarga de CSVs en `diana.py` |
+
+Todas las versiones están fijadas en `requirements.txt` — evita el riesgo de romper compatibilidad silenciosamente al actualizar el entorno.
+
+---
+
+## 16. Cómo ejecutar el sistema
+
+```bash
+# 1. Entorno
+python -m venv machine
+machine\Scripts\activate        # Windows
+pip install -r requirements.txt
+
+# 2. Inicializar el esquema de la base de datos
+python -c "from CEREBELLIUM import inicializar_schema; inicializar_schema()"
+
+# 3. (Opcional) Descargar datos automáticamente
+python diana.py --importar
+
+# 4. Levantar la interfaz de control
+streamlit run pacificokyj.py
+
+# 5. Mantenimiento — solo cuando se necesite reentrenar en limpio
+python PURGA.py
+```
+
+Programación diaria de `diana.py` en Windows (referencia ya incluida en el propio archivo):
+
+```
+schtasks /create /tn "DIANA_Diario" /tr "python C:\ruta\diana.py --importar" /sc daily /st 07:00
+```
+
+---
+
+## 17. Convenciones de desarrollo
+
+- **NORMA 1**: los nombres de archivo `.py` nunca llevan sufijo de versión (nada de `_v4`, `_v321`). La versión vive en un comentario dentro del propio archivo (`"CONTINUITY v4.6"`).
+- **Comentarios de código en español**; nombres de módulo con convención mitológica (`CEREBELLIUM`, `CONTINUITY`, `PACIFICO KyJ`).
+- **Cada gap tiene un identificador único** (`GAP1`…`GAP13`, `T-1`…`T-7`) y un docstring con: qué problema resuelve, qué compatibilidad regresiva mantiene, y qué NO cubre.
+- **Verificación técnica antes de entrega**: los archivos del proyecto se validan con `py_compile`/`ast.parse`, y los cambios de esquema con ejecución real contra SQLite.
+- **Ningún cambio de alcance mayor se aplica sin gate explícito** — ver ejemplo de la migración a MySQL (§11) o la corrección de `factor_arbitro` (§12).
+
+---
+
+## 18. Validación estadística — siguiente frontera analítica
+
+Ni `CONTINUITY.py` ni `pacificokyj.py` implementan todavía un validador estadístico formal (propuesto conceptualmente como "Capa 9c"). El estándar ya acordado para considerar una liga "con edge confirmado" es:
+
+- **≥100–150 apuestas cerradas por liga** (no agregadas globalmente — el ROI de una liga no informa sobre otra).
+- **Intervalo de confianza del ROI que no cruce cero.**
+- **Estabilidad fuera de muestra**: el ROI debe sostenerse al dividir el historial de apuestas de esa liga en dos mitades temporales iguales.
+
+Hoy, `AuditorRentabilidad` (Capa 9b) ya calcula ROI, tasa de acierto y racha por liga — el insumo está listo. Lo que falta es la capa de decisión estadística encima: un ROI positivo con muestra pequeña **no constituye edge confirmado**, es la hipótesis nula la que debe rechazarse con evidencia, no al revés.
+
+---
+
+### Nota de mantenimiento de este documento
+
+Este README refleja el estado del código en la fecha de esta auditoría. Como el proyecto evoluciona por parches quirúrgicos incrementales, **cualquier discrepancia futura entre este documento y el código debe resolverse a favor del código** — y, siguiendo la propia cultura del proyecto, documentarse explícitamente la próxima vez que se regenere este archivo.

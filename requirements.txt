@@ -1,0 +1,18 @@
+# Dependencias principales para CONTINUITY v6.5
+schedule>=1.2.0
+requests>=2.31.0
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+joblib>=1.2.0
+playwright>=1.38.0
+beautifulsoup4>=4.12.0
+pytz>=2023.3
+
+fastapi
+uvicorn
+python-dotenv
+python-telegram-bot
+aiohttp
+websockets

@@ -1,0 +1,44 @@
+[Unit]
+Description=CONTINUITY HFT Binance Autonomous Trading Engine (GCP Tokyo asia-northeast1)
+Documentation=https://github.com/continuity/hft-binance
+After=network.target network-online.target systemd-sysctl.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/app
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+Environment="GCP_REGION=asia-northeast1"
+Environment="BINANCE_MATCHING_ENGINE_REGION=ap-northeast-1"
+Environment="TCP_NODELAY=1"
+
+# Ejecución del orquestador principal
+ExecStart=/app/.venv/bin/python orquestadores_principales/HFT_BINANCE.py
+
+# Políticas de reinicio resiliente 24/7
+Restart=always
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=15s
+
+# Optimización de límites del sistema (Low Latency / High Throughput)
+LimitNOFILE=1048576
+LimitMEMLOCK=infinity
+LimitRTPRIO=99
+LimitRTTIME=infinity
+
+# Afinidad de CPU y prioridad de tiempo real para baja latencia
+CPUAffinity=0,1,2,3
+Nice=-20
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=99
+
+# Seguridad básica
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

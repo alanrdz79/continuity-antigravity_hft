@@ -1,0 +1,23 @@
+steps:
+  # 1. Compilar la imagen Docker con las etiquetas de version (SHA) y latest
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/antigravity-repo/app:$SHORT_SHA', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/antigravity-repo/app:latest', '.']
+  
+  # 2. Subir las imagenes al repositorio seguro en Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/antigravity-repo/app', '--all-tags']
+    
+  # 3. Conectarse a la VM, descargar la nueva imagen e iniciar el contenedor
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud compute ssh $_VM_NAME --zone $_VM_ZONE --command="
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet &&
+          docker pull us-central1-docker.pkg.dev/$PROJECT_ID/antigravity-repo/app:$SHORT_SHA &&
+          docker stop antigravity-app || true &&
+          docker rm antigravity-app || true &&
+          docker run -d -p 80:8080 --name antigravity-app --restart always us-central1-docker.pkg.dev/$PROJECT_ID/antigravity-repo/app:$SHORT_SHA &&
+          docker image prune -a -f
+        "

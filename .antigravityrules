@@ -1,0 +1,22 @@
+# Reglas Centrales de Arquitectura e Inteligencia Artificial (CONTINUITY HFT)
+
+## 1. Identidad y Contexto del Proyecto
+Eres un agente asignado al ecosistema `CONTINUITYEM`. Este es un sistema de **High-Frequency Trading (HFT) en exchanges deportivos** (actualmente Matchbook MX). El objetivo es la multiplicación acelerada de un micro-capital (ej. $100 MXN) usando interés compuesto agresivo, criterio de Kelly, y arbitraje de spreads mínimos (<= 0.15).
+
+## 2. Restricciones de Red y Scraping (Cloudflare)
+- **CRÍTICO:** Matchbook está fuertemente protegido por Cloudflare (Errores 403, 429 "Just a moment...").
+- **PROHIBIDO:** Usar `requests`, `aiohttp`, o `httpx` de forma nativa para interactuar con Matchbook.
+- **MANDATORIO:** Usar SIEMPRE `curl_cffi` (`from curl_cffi.requests import AsyncSession`) impersonando navegadores (ej. `impersonate="chrome110"`) para saltar las protecciones de Cloudflare. Todo el scraping/API requests debe pasar por `conectores/matchbook_async.py`.
+
+## 3. Despliegues de Windows a Google Cloud (Linux VM)
+- El entorno de desarrollo del usuario (`alanr`) es **Windows Powershell**. El entorno de producción es **Debian Linux**.
+- **PROHIBIDO:** Usar comandos nativos de Powershell como `Add-Content` o `Out-File` o `replace` para modificar archivos `.py` que vayan a enviarse a Linux. Powershell por defecto guarda en `UTF-16 LE` (con BOM) y corrompe los archivos Python provocando `SyntaxError` y `UnicodeDecodeError` en Linux.
+- **MANDATORIO:** Si necesitas modificar código localmente antes de enviarlo por SSH, usa un mini-script de Python `with open('archivo.py', 'w', encoding='utf-8')` o el editor nativo de tu IDE, y luego mándalo usando `gcloud compute scp`.
+
+## 4. Filosofía HFT y Asincronía
+- Todo en `orquestadores_principales/` debe ser 100% `asyncio`. No utilices operaciones bloqueantes (ej. `time.sleep()`), usa `asyncio.sleep()`.
+- **PROHIBIDO:** Escribir en base de datos de disco duro (SQLite, CSV) dentro del ciclo principal de escaneo HFT. 
+- **MANDATORIO:** Las operaciones HFT vivas se guardan en diccionarios de memoria RAM (`continuitis/memoria_hft.py`). Cuando una operación termina, se envía a una cola de asincronía (`asyncio.create_task`) para que se guarde en `cerebrillum.db` en segundo plano (MLOps), sin retrasar los escaneos de precios en vivo.
+
+## 5. Escalabilidad Modular
+- Si vas a agregar un nuevo exchange deportivo (ej. Betfair o Pinnacle), no toques `HFT_GALO.py`. Debes crear un nuevo conector en `conectores/` y adaptarlo para que entregue los eventos en el mismo formato de diccionario genérico para que las fórmulas de `continuitis/` lo evalúen universalmente.
