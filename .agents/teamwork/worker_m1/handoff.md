@@ -1,118 +1,172 @@
-# Handoff Report: Milestone 1 — Ingestion, Connectors & Microstructure Core
+# Handoff Report: Milestone 1 Implementation (Foundations, Tooling, VPC Networking, Strict IAM & Secret Manager)
 
-**Agent**: Worker M1 (`teamwork_preview_worker`)  
+**Subagent**: `worker_m1` (Implementation Worker)  
+**Milestone**: Milestone 1 (M1)  
+**Parent Orchestrator**: `orchestrator_hft_gcp` (`922fadba-e6b4-4339-a95e-d2e0ef391991`)  
+**Target Repository**: `C:\Users\alanr\teamwork_projects\hft_gcp_architecture`  
 **Working Directory**: `c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\worker_m1`  
-**Recipient**: Parent Agent (`f2f51f43-3860-4c33-b19f-c0b7ef73f3b6`)  
-**Status**: Task Complete (Hard Handoff)
+**Date**: 2026-10-09  
 
 ---
 
 ## 1. Observation
 
-1. **Requisitos de Despacho y Contratos**:
-   - `DISPATCH.md`: Asignó la propiedad exclusiva de `conectores/binance_async.py` y `continuitis/microestructura_binance.py`.
-   - `PROJECT.md` (líneas 95-110): Especificó el contrato `OrderBookSnapshot` y `BinanceConnectorProtocol`:
-     ```python
-     @dataclass(frozen=True)
-     class OrderBookSnapshot:
-         symbol: str
-         bids: Tuple[Tuple[float, float], ...]
-         asks: Tuple[Tuple[float, float], ...]
-         timestamp_ms: int
-         market_status: str  # "ACTIVE" or "SUSPENDED"
-
-     class BinanceConnectorProtocol(Protocol):
-         async def get_orderbook_snapshot(self, symbol: str) -> OrderBookSnapshot: ...
-         async def place_order(self, symbol: str, side: str, order_type: str, price: float, quantity: float) -> dict: ...
-         async def cancel_order(self, symbol: str, order_id: str) -> dict: ...
-         async def cancel_all_orders(self, symbol: str) -> list: ...
+1. **Host Tooling Setup**:
+   - Executed `scripts/install_terraform.ps1` via `powershell.exe -ExecutionPolicy Bypass -File scripts\install_terraform.ps1`.
+   - Result:
      ```
-   - `PROJECT.md` (líneas 113-134): Especificó los contratos `OrderProposal` y `RiskApprovedOrder`.
-   - `ORIGINAL_REQUEST.md` (líneas 96-98): Especificó las 3 Reglas de Oro:
-     - Regla de Oro 1: Spread MÁXIMO permitido de $0.03.
-     - Regla de Oro 2: Monitorear estado de Binance. Si "MarketStatus: Suspended", bloquear cualquier orden nueva.
-     - Regla de Oro 3: El cálculo del tamaño de posición debe leer estrictamente el volumen disponible en los primeros 3 niveles del BID para garantizar liquidez de escape.
-   - `PLANnew.md` (líneas 69-78): Desequilibrio de compra $I \ge 0.60$ (equivalente al 80% de volumen comprador), orden de compra a $\text{Best Bid} + 1\text{ tick}$, y orden de venta a $\text{Best Ask} + 2\text{ ticks}$.
-   - `PLANnew.md` (líneas 196-226): Guardián de latencia con umbral de 800 ms (`LatencyAndKillSwitchGuard`).
+     [INFO] Fetching standalone zip from HashiCorp releases...
+     [INFO] Downloading https://releases.hashicorp.com/terraform/1.16.5/terraform_1.16.5_windows_amd64.zip...
+     [INFO] Extracting terraform.exe to C:\Users\alanr\.local\bin...
+     [OK] Extracted terraform.exe into C:\Users\alanr\.local\bin
+     [SUCCESS] Terraform is ready:
+     Terraform v1.16.5
+     on windows_amd64
+     ```
+   - Executed `terraform -version`. Output: `Terraform v1.16.5 on windows_amd64` (Exit code 0).
 
-2. **Archivos Implementados**:
-   - `conectores/binance_async.py` (761 líneas): Cliente WebSocket asíncrono para L2 depth, memoria RAM $\mathcal{O}(1)$ para posturas, cliente REST con firmas HMAC SHA256, y simulador mock integral para pruebas deterministas sin credenciales externas.
-   - `continuitis/microestructura_binance.py` (570 líneas): `OrderBookImbalanceCalculator`, `GoldenRulesValidator` (Reglas de Oro 1, 2 y 3), `LatencyAndKillSwitchGuard`, `HFTPriceCalculator`, y `MicroestructuraBinanceEngine`.
-   - `pruebas_unitarias/test_microestructura_binance.py` (305 líneas): 17 casos de prueba cubriendo todas las reglas de microestructura.
-   - `pruebas_unitarias/test_binance_async.py` (220 líneas): 8 casos de prueba cubriendo snapshot RAM $\mathcal{O}(1)$, colocación y cancelación de órdenes, balances, firmas criptográficas y callbacks WS.
+2. **File Implementation in Target Repository**:
+   - Root configuration created:
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\main.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\variables.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\outputs.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\terraform.tfvars`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\services.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\scripts\install_terraform.ps1`
+   - Networking module created:
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\networking\main.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\networking\variables.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\networking\outputs.tf`
+   - IAM module created:
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\iam\main.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\iam\variables.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\iam\outputs.tf`
+   - Secrets module created:
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\secrets\main.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\secrets\variables.tf`
+     - `C:\Users\alanr\teamwork_projects\hft_gcp_architecture\modules\secrets\outputs.tf`
+
+3. **Format & Syntax Verification**:
+   - Executed `terraform fmt -check -diff -recursive`. Output: 0 lines, Exit code 0.
+   - Executed `terraform init -backend=false`. Output:
+     ```
+     Initializing modules...
+     - iam in modules\iam
+     - networking in modules\networking
+     - secrets in modules\secrets
+
+     Initializing provider plugins...
+     - Installing hashicorp/random v3.9.1...
+     - Installing hashicorp/time v0.14.2...
+     - Installing hashicorp/google v6.50.0...
+     - Installing hashicorp/google-beta v6.50.0...
+     Terraform has been successfully initialized!
+     ```
+     Exit code 0.
+   - Executed `terraform validate`. Output:
+     ```
+     Success! The configuration is valid.
+     ```
+     Exit code 0.
+
+4. **Terraform Execution Plan**:
+   - Executed `terraform plan -no-color`. Output:
+     ```
+     Plan: 79 to add, 0 to change, 0 to destroy.
+     ```
+     Outputs planned:
+     - `project_id = "intrepid-decker-480417-e9"`
+     - `region = "asia-northeast1"`
+     - `primary_zone = "asia-northeast1-b"`
+     - `secondary_zone = "asia-northeast1-c"`
+     - `enabled_services` (14 services)
+     - `hft_engine_sa_email = "sa-hft-engine@intrepid-decker-480417-e9.iam.gserviceaccount.com"`
+     - `dataflow_worker_sa_email = "sa-dataflow-worker@intrepid-decker-480417-e9.iam.gserviceaccount.com"`
+     - `hft_eventarc_sa_email = "sa-hft-eventarc@intrepid-decker-480417-e9.iam.gserviceaccount.com"`
+     - `emergency_shutdown_sa_email = "sa-emergency-shutdown@intrepid-decker-480417-e9.iam.gserviceaccount.com"`
+     - `cicd_deployer_sa_email = "sa-cicd-deployer@intrepid-decker-480417-e9.iam.gserviceaccount.com"`
+     - `vpc_network_name = "hft-primary-vpc"`
+     - `subnet_hft_name = "hft-engine-subnet"`
+     Exit code 0.
+
+5. **Existing Python Test Scripts Observation**:
+   - Observed that existing test scripts in `scripts/*.py` and `tests/test_e2e_verification.py` contain non-raw string docstrings with Windows paths `C:\Users\...` which Python 3.14 flags as invalid unicode escapes (`SyntaxError: truncated \UXXXXXXXX escape`).
+   - Observed that `scripts/validate_terraform.ps1` used PowerShell 7 null-conditional operator `?.Source` which throws parser errors in Windows PowerShell 5.1.
 
 ---
 
 ## 2. Logic Chain
 
-1. **De la Ingestión a la Memoria RAM $\mathcal{O}(1)$**:
-   - Las órdenes HFT requieren decisiones en microsegundos; consultar el libro no puede bloquear ni depender de peticiones I/O sincrónicas.
-   - Por tanto, `BinanceAsyncClient` mantiene un diccionario interno `_orderbooks_ram`. Cada actualización (`actualizar_libro`) ordena y trunca las posturas a `depth_limit` (5 a 10 niveles) y almacena un `OrderBookSnapshot` inmutable (`frozen=True`).
-   - La llamada `get_orderbook_snapshot` efectúa un acceso de clave directa $\mathcal{O}(1)$ en RAM.
+1. **Tooling Availability**:
+   - From Observation 1, HashiCorp Terraform CLI was not in PATH initially. Running `scripts/install_terraform.ps1` placed `terraform.exe` into `$HOME\.local\bin`. Because `$HOME\.local\bin` is loaded into user PATH, `terraform` is now globally available across all PowerShell and CMD shells.
 
-2. **Del Desequilibrio de Órdenes a la Dominancia del 80%**:
-   - La fórmula de desequilibrio es $I = \frac{\sum V_{\text{Bid}} - \sum V_{\text{Ask}}}{\sum V_{\text{Bid}} + \sum V_{\text{Ask}}}$.
-   - Si $\frac{\sum V_{\text{Bid}}}{\sum V_{\text{Total}}} = 0.80$, entonces $\frac{\sum V_{\text{Ask}}}{\sum V_{\text{Total}}} = 0.20$.
-   - Entonces $I = \frac{0.80 - 0.20}{0.80 + 0.20} = 0.60$.
-   - Consecuentemente, el filtro de dominancia compradora del 80% equivale algebraicamente a $I \ge 0.60$.
-   - Si el libro está balanceado ($I = 0.0$) o la cuota de compra es menor (ej. 79%, $I = 0.58$), `detectar_dominancia_compra` retorna `False` y el motor rechaza la emisión de órdenes.
+2. **Compliance with Dispatch Specifications**:
+   - From Observation 2, all 15 assigned files across root, networking, IAM, and secrets were authored following the blueprints from `explorer_m1_1`, `explorer_m1_2`, and `explorer_m1_3`.
+   - The GCP project ID is locked to `intrepid-decker-480417-e9`, target region to `asia-northeast1`, primary zone to `asia-northeast1-b`, secondary zone to `asia-northeast1-c`.
+   - `services.tf` manages 14 GCP APIs (encompassing all 11 required services) with `disable_on_destroy = false` and `disable_dependent_services = false`, plus an explicit 30s `time_sleep` propagation delay.
+   - `modules/networking` defines custom VPC `hft-primary-vpc` with `routing_mode = "REGIONAL"`, `mtu = 1460`, subnets with `private_ip_google_access = true`, Cloud Router & Cloud NAT (`min_ports_per_vm = 1024`, `tcp_established_idle_timeout_sec = 1200`), PSA peering range `10.10.16.0/20`, and strict default-deny firewall with internal VPC and IAP SSH rules.
+   - `modules/iam` declares 5 dedicated service accounts and 31 discrete `google_project_iam_member` bindings with zero primitive roles (`roles/owner` or `roles/editor`).
+   - `modules/secrets` declares 5 Secret Manager secrets with regional replication in `asia-northeast1`, non-empty safe mock initial versions, and resource-level `roles/secretmanager.secretAccessor` bindings strictly limited to authorized identities.
 
-3. **De las Reglas de Oro al Control de Riesgo Inmediato**:
-   - **Regla de Oro 1**: Los mercados de predicción deportiva pueden tener spreads artificialmente anchos durante pausas. `verificar_regla_oro_1_spread` valida que $\text{Best Ask} - \text{Best Bid} \le 0.03$. Si el spread supera $0.03 o si el libro se invierte, la operación se aborta.
-   - **Regla de Oro 2**: En eventos deportivos (gol o revisión de VAR), Binance suspende el mercado. `verificar_regla_oro_2_estado_mercado` comprueba si `market_status == 'SUSPENDED'`; si es así, bloquea de inmediato la emisión de órdenes.
-   - **Regla de Oro 3**: En situaciones de emergencia, liquidar una posición requiere cruzar el libro de venta a mercado. Para garantizar que exista contrapartida suficiente, `calcular_liquidez_escape_top3_bids` agrega exclusivamente el volumen de los primeros 3 niveles del BID ($\sum_{k=1}^3 V_{\text{Bid}}^{(k)}$). `verificar_regla_oro_3_liquidez` rechaza cualquier operación cuyo tamaño exceda esta liquidez de escape.
+3. **HCL Integrity & Syntactic Soundness**:
+   - From Observation 3, running `terraform fmt -check`, `terraform init -backend=false`, and `terraform validate` returned exit code 0 and confirmed that the provider configuration, module dependencies, variable declarations, and resource schemas are completely valid.
 
-4. **Del Guardián de Latencia a la Prevención de Arbitraje Adverso**:
-   - Si la latencia del feed deportivo o de WebSocket supera 800 ms, el sistema queda desactualizado respecto a otros participantes de alta frecuencia.
-   - `LatencyAndKillSwitchGuard.autorizacion_disparo()` audita el delta de tiempo transcurrido desde el último pulso. Si supera los 800 ms, activa el disyuntor de emergencia y bloquea el disparo de órdenes hasta que el feed se re-estabilice.
-
-5. **De la Microestructura a la Estrategia Maker HFT**:
-   - Para no pagar tarifas Taker en la entrada, se coloca una orden Limit Buy a $\text{Best Bid} + 1\text{ tick}$.
-   - Para capturar el micro-spread y el decaimiento temporal, la salida se programa a $\text{Best Ask} + 2\text{ ticks}$.
-   - Ambos cálculos son realizados por `HFTPriceCalculator` y empaquetados en `OrderProposal`.
+4. **Resource Provisioning Plan Readiness**:
+   - From Observation 4, `terraform plan` successfully resolved all dependencies and formulated an execution plan of 79 resources to add, confirming that Milestone 1 can be applied cleanly without configuration bugs or cyclic dependencies.
 
 ---
 
 ## 3. Caveats
 
-- **Conexión en Vivo vs Simulación**: El conector cuenta con el bucle completo de conexión WebSocket y endpoints REST reales con firma HMAC SHA256; sin embargo, en entornos donde no existan credenciales API configuradas o no haya acceso a red externa, el cliente opera en modo `mock_mode=True`, el cual emula de forma determinista la profundidad de mercado, colocación y cancelación de órdenes.
-- **Tick Size Específico por Par**: El tick size predeterminado está parametrizado a $0.01 (típico en mercados de contratos binarios de predicción), pero puede ser sobreescrito según la especificación del símbolo de Binance (`tick_size=0.001`, `0.0001`, etc.).
-- **No se realizaron modificaciones fuera del alcance**: Ningún archivo perteneciente a otros hitos (M2, M3, M4) fue modificado.
+1. **Pre-existing Python Script Docstring Escapes**:
+   - Scripts in `scripts/` (`run_all_tests.py`, `test_infrastructure_syntax.py`, etc.) and `tests/test_e2e_verification.py` were pre-authored with `Target: C:\Users\...` in their module docstrings. In Python 3.12/3.14, `\U` triggers unicode escape syntax errors. These files were not in the worker's exclusive write ownership list and should be patched by replacing docstring paths with forward slashes or raw docstrings (`r"""..."""`).
+2. **PowerShell 5.1 Syntax in Existing Scripts**:
+   - `scripts/validate_terraform.ps1` contains `?.Source`. In Windows PowerShell 5.1, this is an unexpected token. Replacing `(Get-Command terraform -ErrorAction SilentlyContinue)?.Source` with standard `$tf = Get-Command terraform -ErrorAction SilentlyContinue; if ($tf) { $TerraformBin = $tf.Source }` resolves this for environments running Windows PowerShell 5.1.
+3. **Secret Injection for Live Trading**:
+   - Secrets are provisioned with safe non-empty mock placeholders (`MOCK_BINANCE_API_KEY_PLACEHOLDER`, etc.). In live production deployments (M5), operators must inject real secrets via environment variables `TF_VAR_binance_api_key` or `gcloud secrets versions add`.
 
 ---
 
 ## 4. Conclusion
 
-El hito M1 ha sido implementado y completado al 100% con estricto apego a los contratos de arquitectura y directivas de negocio:
-- `conectores/binance_async.py` implementa el cliente asíncrono WebSocket y REST, el almacén en RAM $\mathcal{O}(1)$ de posturas, el heartbeat ping/pong, y el simulador mock para pruebas sin credenciales.
-- `continuitis/microestructura_binance.py` implementa el cálculo de OBI, dominancia compradora al 80% ($I \ge 0.60$), Reglas de Oro 1, 2 y 3, guardián de latencia (<800 ms) y cálculo algorítmico de precios Maker.
-- Las suites de pruebas unitarias cubren exhaustivamente todos los escenarios requeridos.
+Milestone 1 is complete, verified, and ready for handoff:
+1. Terraform CLI v1.16.5 is installed on the host and accessible in PATH.
+2. Root configuration, API service enablement with protection flags, VPC networking with zero public IPs and Cloud NAT, strict least-privilege IAM with 5 isolated service accounts and zero primitive roles, and regional Secret Manager with scoped accessor policies are fully implemented.
+3. The configuration passes `terraform fmt`, `terraform init`, `terraform validate`, and plans 79 resources without errors.
+4. Downstream milestones (M2: Market Ingestion & Compute Engine; M3: Storage & Stream Processing) can now proceed based on the established network and IAM interface contracts.
 
 ---
 
 ## 5. Verification Method
 
-Para verificar independientemente el trabajo realizado:
-
-1. **Inspección de Archivos**:
-   - `conectores/binance_async.py`
-   - `continuitis/microestructura_binance.py`
-   - `pruebas_unitarias/test_binance_async.py`
-   - `pruebas_unitarias/test_microestructura_binance.py`
-
-2. **Comando de Ejecución de Pruebas**:
-   ```bash
-   pytest pruebas_unitarias/test_binance_async.py pruebas_unitarias/test_microestructura_binance.py -v
+To independently verify the implementation:
+1. **Verify Terraform CLI**:
+   ```powershell
+   terraform -version
    ```
-   O mediante ejecución directa en Python:
-   ```bash
-   python pruebas_unitarias/test_binance_async.py
-   python pruebas_unitarias/test_microestructura_binance.py
-   ```
+   *Expected result*: `Terraform v1.16.5` (or higher), Exit code 0.
 
-3. **Condiciones de Invalidación**:
-   - Si $I = \frac{V_B - V_A}{V_B + V_A}$ no detecta dominancia para $V_B = 800$ y $V_A = 200$.
-   - Si una orden con spread de $0.031 es aprobada.
-   - Si una orden en un mercado con `MarketStatus == 'SUSPENDED'` no es bloqueada.
-   - Si una orden cuyo tamaño excede la suma de los primeros 3 niveles de BID es autorizada bajo la Regla de Oro 3.
-   - Si una latencia de feed superior a 800 ms no activa la bandera de emergencia.
+2. **Verify Formatting & Initialization**:
+   ```powershell
+   cd C:\Users\alanr\teamwork_projects\hft_gcp_architecture
+   terraform fmt -check -diff -recursive
+   terraform init -backend=false
+   ```
+   *Expected result*: Exit code 0, all 3 modules and 4 providers successfully initialized.
+
+3. **Verify Schema Validation**:
+   ```powershell
+   terraform validate
+   ```
+   *Expected result*: `Success! The configuration is valid.`, Exit code 0.
+
+4. **Verify Execution Plan**:
+   ```powershell
+   terraform plan -no-color
+   ```
+   *Expected result*: `Plan: 79 to add, 0 to change, 0 to destroy.`, Exit code 0.
+
+5. **Invalidation Conditions**:
+   - Modifying module source paths or variable types in `variables.tf` without updating module declarations.
+   - Introducing primitive roles (`roles/owner` or `roles/editor`) into `modules/iam/main.tf`.
+   - Attaching public IP access configurations to subnet definitions.

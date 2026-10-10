@@ -1,38 +1,59 @@
-# Dispatch: Worker M2 — Risk Engine, Automated Treasury & Metrics Auditor
-
-## 2026-10-07T03:59:10Z
-From: parent (f2f51f43-3860-4c33-b19f-c0b7ef73f3b6)
-You are teamwork_preview_worker (Worker M2).
-Your working directory is: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\worker_m2
-Your task assignment is in: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\worker_m2\DISPATCH.md
-
-MANDATORY: Read ORIGINAL_REQUEST.md at: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\ORIGINAL_REQUEST.md
-Read PROJECT.md at: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\PROJECT.md
-Read PLANnew.md at: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\PLANnew.md
-
-Files you own exclusively:
-- continuitis/riesgo_binance.py
-- continuitis/tesoreria.py
-- continuitis/auditor_metricas.py
-
-Deliverables:
-1. continuitis/riesgo_binance.py:
-   - Expected Value (EV) calculation net of BNB fee discount: EV = (P_estimada * Cuota_neta) - 1.0 >= 0.015.
-   - Real Position Sizing formula: S_nominal = (B * pct_riesgo_fijo * factor_racha) / max(pct_stop_loss, 0.01).
-   - Losing streak attenuation: factor_racha = 0.85^streak, reset to 1.0 on win.
-   - Cluster exposure cap: <= 15% of bankroll simultaneously committed across active cluster.
-   - Golden Rule 3: Dynamic sizing bounded by available volume in top 3 BID levels (S <= sum V_Bid^(1..3)) to guarantee emergency exit liquidity.
-2. continuitis/tesoreria.py:
-   - "Ordeño e Inyección" capital progression ($10 -> 100 -> 1,000 USD).
-   - $10 -> 100 USD capital injection (+100 USD event) gated by validation (N >= 300, p < 0.05, EV > 0).
-   - Acceleration phase (<$1,000): monthly profit split (40% operating, 60% compound reinvestment).
-   - Autonomous harvest (>= $1,000): 35% monthly profit harvest to MXN, remainder split 40/60.
-3. continuitis/auditor_metricas.py:
-   - Accurate continuous analytical metrics: Win Rate (WR), Accumulated Capital (B_N = B_0 * prod(1 + f_i * R_i)), ROI (sum PnL / B_0), Yield on turnover (sum PnL / sum S_i), Total Trades (N).
-   - Statistical validation gate: Z = (WR - 0.50) / (0.50 / sqrt(N)), p-value < 0.05 <=> Z > 1.645.
-4. Verify your work by running Python syntax checks or unit tests.
+## 2026-10-09T04:36:54Z
+You are the implementation Worker subagent for Milestone 2 (M2: Market Ingestion via Pub/Sub, Low-Latency Compute Engine C3/C4, and Root Integration) of the HFT GCP Architecture project.
+Your assigned working directory: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\worker_m2
+Target project path: C:\Users\alanr\teamwork_projects\hft_gcp_architecture
 
 MANDATORY INTEGRITY WARNING:
 DO NOT CHEAT. All implementations must be genuine. DO NOT hardcode test results, create dummy/facade implementations, or circumvent the intended task. A teamwork_preview_auditor will independently verify your work. Integrity violations WILL be detected and your work WILL be rejected.
 
-Write report.md and deliver handoff.md in your working directory. Send a message to parent when complete.
+MANDATORY: Read ORIGINAL_REQUEST.md first at: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\ORIGINAL_REQUEST.md
+Read PROJECT.md at: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\orchestrator_hft_gcp\PROJECT.md
+
+Read the Explorer blueprints for Milestone 2:
+1. Pub/Sub Module: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\explorer_m2_1\handoff.md and proposed_*.tf
+2. Compute Engine Module: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\explorer_m2_2\handoff.md and proposed_*.tf
+3. Root Wiring & Carry-Forward Remediations: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\explorer_m2_3\handoff.md
+
+Your exclusive write ownership in C:\Users\alanr\teamwork_projects\hft_gcp_architecture:
+- modules/pubsub/variables.tf
+- modules/pubsub/main.tf
+- modules/pubsub/outputs.tf
+- modules/compute/variables.tf
+- modules/compute/main.tf
+- modules/compute/outputs.tf
+- modules/compute/startup_script.sh
+- modules/networking/main.tf (apply PSA address pinning)
+- main.tf (wire pubsub & compute, fix line 152 commented eventarc SA email)
+- outputs.tf (export pubsub and compute outputs)
+- scripts/*.py and tests/*.py (convert docstrings to raw strings r"""...""")
+- scripts/validate_terraform.ps1 (update to standard PowerShell 5.1 syntax)
+
+Implementation instructions:
+1. Implement modules/pubsub/:
+   - Topics: hft-market-trades, hft-market-orderbook, hft-market-snapshots, hft-safety-alerts, hft-safety-alerts-dlq, plus alias hft-orderbook-depth.
+   - Regional Tokyo storage policy (asia-northeast1).
+   - Low-latency subscriptions with message ordering, ack deadline 10s, DLT policy with 5 retries.
+   - IAM bindings for sa-hft-engine and sa-dataflow-worker.
+2. Implement modules/compute/:
+   - C3/C4 VM instance in Tokyo (asia-northeast1-b or asia-northeast1-c), machine type c4-standard-4 (fallback c3-standard-4).
+   - Dynamic disk type: hyperdisk-balanced for C4, pd-ssd for C3.
+   - gVNIC enabled (nic_type = "GVNIC"), Tier 1 network bandwidth tier.
+   - Collocated compact placement policy (google_compute_resource_policy collocated = true).
+   - Network interface attached to subnet_hft_id with ZERO access_config (0 public external IPs).
+   - Service account sa-hft-engine.
+   - Startup script tuning TCP socket buffers and gVNIC queue settings.
+3. Root wiring & carry-forward fixes:
+   - Wire module pubsub and module compute into root main.tf with explicit depends_on.
+   - Export outputs in root outputs.tf.
+   - Fix 1: Add address = "10.10.16.0" to google_compute_global_address.hft_psa_address in modules/networking/main.tf.
+   - Fix 2: Convert docstrings in scripts/*.py and tests/*.py to raw strings r"""...""" to eliminate Python 3.12+ unicode escape errors.
+   - Fix 3: In scripts/validate_terraform.ps1, replace ?.Source with PowerShell 5.1 syntax.
+   - Fix 4: In main.tf line 152, correct commented reference to module.iam.hft_eventarc_sa_email.
+4. Validation:
+   - Run terraform init (if needed to recognize new modules).
+   - Run terraform fmt -recursive, terraform validate, and terraform plan.
+   - Run python scripts/test_infrastructure_syntax.py and verify exit code 0.
+   - Run powershell -ExecutionPolicy Bypass -File scripts\validate_terraform.ps1 and verify exit code 0.
+5. Documentation:
+   - Write report.md and handoff.md in your working directory.
+   - Send completion message to parent orchestrator.

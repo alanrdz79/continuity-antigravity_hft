@@ -1,0 +1,23 @@
+# ==============================================================================
+# CONTINUITY HFT GCP ARCHITECTURE - EMERGENCY SHUTDOWN CLOUD FUNCTION (GEN 2)
+# Runtime: Python 3.11+
+# Location: functions/emergency_shutdown/requirements.txt
+# ==============================================================================
+
+# Google Cloud Functions Framework (Gen 2 execution container runtime)
+functions-framework>=3.5.0
+
+# Cloud Memorystore (Redis) client with TLS / in-transit encryption support
+redis>=5.0.0
+
+# Resilient HTTP Client for Binance API purge & Telegram webhook dispatch
+requests>=2.31.0
+
+# Google Cloud Pub/Sub Client for low-latency engine halt message publication
+google-cloud-pubsub>=2.19.0
+
+# Google Cloud Secret Manager client (runtime fallback credentials retrieval)
+google-cloud-secret-manager>=2.18.0
+
+# CloudEvent parsing and serialization specification for EventArc v2
+cloudevents>=1.10.0

@@ -1,0 +1,110 @@
+{
+  "timestamp": "2026-10-10T04:01:22Z",
+  "total_checks": 25,
+  "passed_checks": 25,
+  "failed_checks": 0,
+  "status": "CONFIRMED",
+  "results": {
+    "pubsub_all_topics_have_storage_policy": {
+      "passed": true,
+      "message": "Found 6 topics with message_storage_policy out of 6 total topics"
+    },
+    "pubsub_persistence_restricted_to_tokyo": {
+      "passed": true,
+      "message": "var.allowed_persistence_regions defaults to ['asia-northeast1']"
+    },
+    "pubsub_streaming_subscriptions_ordered": {
+      "passed": true,
+      "message": "All operational subscriptions enforce ordering: OK"
+    },
+    "pubsub_dlq_subscription_unordered_for_diagnostics": {
+      "passed": true,
+      "message": "safety_alerts_dlq subscription explicitly disables message ordering"
+    },
+    "pubsub_dlt_policy_on_all_consumer_subscriptions": {
+      "passed": true,
+      "message": "Found 6 subscriptions protected with DLT policy"
+    },
+    "pubsub_max_delivery_attempts_bounded_5_to_100": {
+      "passed": true,
+      "message": "max_delivery_attempts validation ensures compliance with GCP Pub/Sub constraint"
+    },
+    "pubsub_ack_deadline_low_latency": {
+      "passed": true,
+      "message": "ack_deadline_seconds defaults to 10s with valid GCP range"
+    },
+    "pubsub_system_agent_iam_dlt_permissions": {
+      "passed": true,
+      "message": "Pub/Sub system agent has publisher on DLQ topic and subscriber on forwarding subscriptions"
+    },
+    "compute_instance_declared": {
+      "passed": true,
+      "message": "google_compute_instance.trading_engine block exists"
+    },
+    "compute_zero_public_ips_no_access_config": {
+      "passed": true,
+      "message": "network_interface strictly omits access_config block (0 public external IPs)"
+    },
+    "compute_gvnic_hardware_offload_enabled": {
+      "passed": true,
+      "message": "gVNIC virtual NIC explicitly enabled"
+    },
+    "compute_tier1_network_bandwidth_configured": {
+      "passed": true,
+      "message": "Tier 1 network bandwidth configured for high egress line rate"
+    },
+    "compute_compact_placement_collocation": {
+      "passed": true,
+      "message": "Compact placement policy declared and attached with COLLOCATED"
+    },
+    "compute_dynamic_disk_type_c4_c3_compatibility": {
+      "passed": true,
+      "message": "C4 instances automatically select hyperdisk-balanced; C3 falls back to pd-ssd"
+    },
+    "compute_machine_type_validation_covers_c4_and_c3": {
+      "passed": true,
+      "message": "Machine type variable validates C4 and C3 standard and highcpu profiles"
+    },
+    "compute_startup_audits_zero_external_ip": {
+      "passed": true,
+      "message": "Startup script actively probes GCP instance metadata to abort if external IP is detected"
+    },
+    "compute_startup_applies_low_latency_sysctl": {
+      "passed": true,
+      "message": "16MB socket buffers and kernel busy polling (busy_read/busy_poll=50) configured"
+    },
+    "compute_startup_applies_gvnic_ring_buffer_tuning": {
+      "passed": true,
+      "message": "ethtool maximizes ring buffer to 4096 and disables interrupt moderation"
+    },
+    "root_main_wires_pubsub_and_compute": {
+      "passed": true,
+      "message": "Both module.pubsub and module.compute are declared active in root main.tf"
+    },
+    "root_main_explicit_dependency_graph": {
+      "passed": true,
+      "message": "module.pubsub depends on iam & services; module.compute depends on networking & iam"
+    },
+    "root_outputs_export_m2_contracts": {
+      "passed": true,
+      "message": "All expected M2 root outputs are present: ALL PRESENT"
+    },
+    "simulation_poison_tick_evicted_to_dlq": {
+      "passed": true,
+      "message": "Poisoned tick 3 evicted to DLQ after exactly 5 attempts"
+    },
+    "simulation_subsequent_ticks_unblocked_in_order": {
+      "passed": true,
+      "message": "All subsequent ticks 4..10 processed in strict sequential order: [1, 2, 4, 5, 6, 7, 8, 9, 10]"
+    },
+    "simulation_tokyo_regional_persistence_within_hft_budget": {
+      "passed": true,
+      "message": "Local Tokyo persistence latency 1.8ms is well within HFT budget 5.0ms"
+    },
+    "simulation_cross_region_persistence_violates_hft_budget": {
+      "passed": true,
+      "message": "Cross-region replication 115.0ms would breach HFT budget by 110.0ms"
+    }
+  },
+  "failures": []
+}

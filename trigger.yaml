@@ -1,0 +1,17 @@
+approvalConfig:
+  approvalRequired: true
+autodetect: true
+createTime: '2026-10-08T14:48:29.688987371Z'
+github:
+  name: continuity-antigravity_hft
+  owner: alanrdz79
+  push:
+    branch: .*
+id: b4e99dfa-1e19-4380-a4b2-f26ce5d6db57
+includeBuildLogs: INCLUDE_BUILD_LOGS_WITH_STATUS
+name: disparador1sisthft
+resourceName: projects/intrepid-decker-480417-e9/locations/global/triggers/b4e99dfa-1e19-4380-a4b2-f26ce5d6db57
+serviceAccount: projects/intrepid-decker-480417-e9/serviceAccounts/735347232184-compute@developer.gserviceaccount.com
+substitutions:
+  _VM_NAME: continuity-hft-binance
+  _VM_ZONE: asia-northeast1-b

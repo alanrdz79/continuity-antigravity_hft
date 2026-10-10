@@ -123,3 +123,43 @@ Por favor, instruye al Project Orchestrator para que:
 - Agregue esto como el Hito / Milestone 6 (o dentro de M3 de forma segura).
 - Despliegue un `worker` para implementar `estrategias/arbitraje_amm.py` con estas reglas de micro-arbitraje.
 - Añada las pruebas correspondientes y vuelva a certificar antes de la Auditoría de Victoria.
+
+
+## 2026-10-09T03:49:39Z
+
+# Teamwork Project Prompt — Draft
+
+> Status: Launched
+> Goal: Craft prompt → get user approval → delegate to teamwork_preview
+> Requested team: Use a very large team of agents.
+
+Implement a real-time High-Frequency Trading (HFT) autonomous cloud architecture on GCP. Use a very large team of agents. Generate production-ready Infrastructure as Code (Terraform) with robust error handling to provision Pub/Sub, Dataflow, Compute Engine (C3/C4), Memorystore (Redis), Bigtable, and EventArc, and then **apply the configuration to provision the live resources**.
+
+Working directory: ~/teamwork_projects/hft_gcp_architecture
+Integrity mode: demo
+
+## Requirements
+
+### R1. Core Infrastructure Provisioning & Execution
+Provision and **deploy** the core HFT GCP architecture using Terraform. This includes Pub/Sub topics/subscriptions for market data ingestion, Dataflow jobs for stream processing, C3/C4 Compute Engine instances (with gVNIC enabled) in the Asia-Northeast region (closest to Binance), Cloud Bigtable for historical tick data, and Cloud Memorystore (Redis) for high-speed state caching.
+
+### R2. Autonomous Safety Orchestration
+Configure Cloud EventArc resources to react autonomously to system events, such as network latency spikes or API errors, and route them to an emergency shutdown or alert sink.
+
+### R3. Production-Ready Resilience
+The infrastructure code must be designed for production. It should define strict IAM roles, isolated VPC networks for the Compute Engine instances, and secure secret management for API credentials. 
+
+### R4. Architectural Documentation
+Generate a detailed markdown report (`architecture_summary.md`) explaining the exact procedure followed, how the infrastructure was optimally validated, and explicitly detailing any missing steps or functions that should be reviewed or added in the future.
+
+## Acceptance Criteria
+
+### Verification & Validation
+- [ ] `terraform apply -auto-approve` must run successfully and provision all the requested GCP resources in the user's project.
+- [ ] The `architecture_summary.md` file must exist and contain a thorough breakdown of the implemented architecture, validation results, and a checklist of future improvements.
+- [ ] Security scanners or manual checks confirm that network isolation (VPC) and IAM least-privilege roles are successfully deployed to the cloud.
+
+
+## 2026-10-10T14:45:33Z
+
+The server restarted and all subagents were stopped. Please resume the Milestone 6 evaluation and proceed to the Victory Audit.

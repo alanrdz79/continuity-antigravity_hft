@@ -1,76 +1,69 @@
-# BRIEFING — 2026-10-07T04:15:00Z
+# BRIEFING — 2026-10-09T04:49:30Z
 
 ## Mission
-Implement and verify Milestone M2: Risk Engine (`continuitis/riesgo_binance.py`), Automated Treasury (`continuitis/tesoreria.py`), and Metrics Auditor (`continuitis/auditor_metricas.py`).
+Implement Milestone 2 (M2): Market Ingestion via Pub/Sub, Low-Latency Compute Engine C3/C4, and Root Integration with Carry-Forward Remediations.
 
 ## 🔒 My Identity
-- Archetype: teamwork_preview_worker
+- Archetype: worker
 - Roles: implementer, qa, specialist
 - Working directory: c:\Users\alanr\AE_ecosistema\CONTINUITYEM\.agents\teamwork\worker_m2
-- Original parent: f2f51f43-3860-4c33-b19f-c0b7ef73f3b6
-- Milestone: M2 — Risk Engine, Automated Treasury & Metrics Auditor
+- Original parent: 922fadba-e6b4-4339-a95e-d2e0ef391991
+- Milestone: M2 - Pub/Sub Ingestion, Low-Latency Compute Engine C3/C4, Root Integration
 
 ## 🔒 Key Constraints
-- Own exclusively: `continuitis/riesgo_binance.py`, `continuitis/tesoreria.py`, `continuitis/auditor_metricas.py`.
-- Follow exact mathematical formulas from PLANnew.md, PROJECT.md, and DISPATCH.md.
-- Expected Value (EV) net of BNB fee discount: EV = (P_estimada * Cuota_neta) - 1.0 >= 0.015.
-- Real Position Sizing: S_nominal = (B * pct_riesgo_fijo * factor_racha) / max(pct_stop_loss, 0.01).
-- Losing streak attenuation: factor_racha = 0.85^consecutive_losses, reset to 1.0 on win.
-- Cluster exposure cap: <= 15% of bankroll simultaneously committed across active cluster.
-- Golden Rule 3: Dynamic sizing bounded by top 3 BID levels volume (S <= sum V_Bid^(1..3)) to guarantee emergency exit liquidity.
-- "Ordeño e Inyección" capital progression ($10 -> 100 -> 1,000 USD).
-- $10 -> 100 USD capital injection (+100 USD event) gated by validation (N >= 300, p < 0.05, EV > 0).
-- Acceleration phase (<$1,000): monthly profit split (40% operating, 60% compound reinvestment).
-- Autonomous harvest (>= $1,000): 35% monthly profit harvest to MXN, remainder split 40/60.
-- Continuous analytical metrics: Win Rate (WR), Accumulated Capital (B_N = B_0 * prod(1 + f_i * R_i)), ROI (sum PnL / B_0), Yield on turnover (sum PnL / sum S_i), Total Trades (N).
-- Statistical validation gate: Z = (WR - 0.50) / (0.50 / sqrt(N)), p-value < 0.05 <=> Z > 1.645.
-- Integrity: DO NOT CHEAT. No hardcoding or dummy implementations. Genuine calculation logic.
+- Target project path: C:\Users\alanr\teamwork_projects\hft_gcp_architecture
+- DO NOT CHEAT: Genuine implementations only, no dummy/facade implementations, no hardcoded test outputs.
+- Subnet HFT with 0 public external IPs (no access_config block).
+- C3/C4 machine types in Tokyo (asia-northeast1-b/c) with gVNIC, Tier 1 bandwidth tier, compact placement policy.
+- Pub/Sub Tokyo regional policy, message ordering, DLT (5 retries), 10s ack deadline.
+- Root wiring with explicit depends_on and outputs exported.
+- Carry-forward fixes: PSA address pinning, raw strings in Python scripts/tests, PS 5.1 syntax fix, main.tf line 152 comment fix.
+- Full verification: terraform init/fmt/validate/plan, python test suite, powershell validation script.
 
 ## Current Parent
-- Conversation ID: f2f51f43-3860-4c33-b19f-c0b7ef73f3b6
-- Updated: 2026-10-07T03:59:10Z
+- Conversation ID: 922fadba-e6b4-4339-a95e-d2e0ef391991
+- Updated: 2026-10-09T04:49:30Z
 
 ## Task Summary
-- **What to build**: Modules for Risk Engine (`continuitis/riesgo_binance.py`), Automated Treasury (`continuitis/tesoreria.py`), and Metrics Auditor (`continuitis/auditor_metricas.py`).
-- **Success criteria**: All mathematical formulas match specs, full unit test suite passes, statistical gate and liquidity clamping function properly.
-- **Interface contracts**: PROJECT.md § Interface Contracts
-- **Code layout**: continuitis/
-
-## Key Decisions Made
-- Designed clean dataclasses adhering to PROJECT.md contracts (`OrderProposal`, `RiskApprovedOrder`, `TradeResult`, `TreasuryProtocol`, `MetricsAuditorProtocol`).
-- Incorporated BNB fee discount parameterization (0.10% base * 0.75 discount = 0.075% net effective fee).
-- Implemented real position sizing formula bounded by: stop loss floor (1%), streak attenuation (0.85^losses), cluster exposure cap (15%), and Golden Rule 3 (top 3 BIDs liquidity ceiling).
-- Implemented exact compound capital equation $B_N = B_0 \prod_{i=1}^N (1 + f_i R_i)$ in `AuditorMetricas`.
-- Implemented statistical validation gate ($Z = \frac{WR - 0.50}{0.50/\sqrt{N}}$, $p = \frac{1}{2} \text{erfc}(Z/\sqrt{2})$) gating the +100 USD capital injection.
-- Implemented monthly 40/60 split in acceleration phase (<$1,000) and 35% MXN harvest + 40/60 remainder split in autonomous harvest phase (>= $1,000).
-- Created verification test suite in `test_tesoreria.py` and `pruebas_unitarias/test_riesgo_tesoreria_metricas.py`.
-
-## Artifact Index
-- .agents/teamwork/worker_m2/DISPATCH.md — Task assignment
-- .agents/teamwork/worker_m2/BRIEFING.md — Working memory
-- .agents/teamwork/worker_m2/progress.md — Liveness heartbeat and progress log
-- .agents/teamwork/worker_m2/report.md — Implementation report
-- .agents/teamwork/worker_m2/handoff.md — 5-component handoff report
-- continuitis/riesgo_binance.py — Risk Engine & Golden Rule 3
-- continuitis/tesoreria.py — Treasury progression, gated injection & autonomous harvest
-- continuitis/auditor_metricas.py — Continuous analytical metrics & statistical gate
-- test_tesoreria.py — Cash simulation and acceptance criteria verification script
-- pruebas_unitarias/test_riesgo_tesoreria_metricas.py — Pytest suite
+- **What to build**: modules/pubsub, modules/compute, root main.tf/outputs.tf integration, carry-forward fixes.
+- **Success criteria**: terraform validate and plan pass cleanly; python test script passes; validate_terraform.ps1 passes.
+- **Interface contracts**: PROJECT.md and Explorer handoff blueprints.
+- **Code layout**: C:\Users\alanr\teamwork_projects\hft_gcp_architecture
 
 ## Change Tracker
 - **Files modified**:
-  - `continuitis/riesgo_binance.py`: Created with complete EV net BNB discount, real position sizing, streak attenuation, 15% cluster cap, and Golden Rule 3 liquidity bounds.
-  - `continuitis/tesoreria.py`: Created with capital progression ($10->$100->$1000), gated +100 USD event, acceleration split (40/60), and autonomous harvest (35% MXN).
-  - `continuitis/auditor_metricas.py`: Created with continuous WR, compound B_N, ROI, Yield, Total Trades, Z-score and p-value validation gate, optional SQLite WAL.
-  - `test_tesoreria.py`: Acceptance test suite covering cash simulation, streak attenuation, gated injection, and analytical formulas.
-  - `pruebas_unitarias/test_riesgo_tesoreria_metricas.py`: Unit test suite covering all modules.
-- **Build status**: Ready and verified
+  - `modules/pubsub/variables.tf`: Pub/Sub variables (regional policy, ordering, ack deadline, DLQ)
+  - `modules/pubsub/main.tf`: 5 topics + 1 alias, 7 subscriptions with ordering & DLT, IAM least-privilege bindings
+  - `modules/pubsub/outputs.tf`: Full outputs for topics, subscriptions, and aggregated dictionaries
+  - `modules/compute/variables.tf`: C3/C4 machine types, compact placement policy, networking variables
+  - `modules/compute/main.tf`: C3/C4 instance with gVNIC, Tier 1 bandwidth, 0 public IPs, compact placement policy
+  - `modules/compute/outputs.tf`: Instance ID, URI self-link, private IP, zone, placement policy ID
+  - `modules/compute/startup_script.sh`: Network buffer tuning (16MB), gVNIC multi-queue, 0 public IP verification
+  - `modules/networking/main.tf`: Added pinned internal address `10.10.16.0` to PSA address allocation
+  - `main.tf`: Wired `module "pubsub"` and `module "compute"` with explicit depends_on, fixed line 152 EventArc SA reference
+  - `outputs.tf`: Exported all M2 compute and pubsub outputs at root level
+  - `scripts/*.py` & `tests/*.py`: Converted all module docstrings to `r"""..."""` to resolve Python 3.12+ unicode escape errors
+  - `scripts/validate_terraform.ps1`: Replaced PowerShell 7 `?.Source` with PowerShell 5.1 compatible branching
+  - `scripts/test_infrastructure_syntax.py`: Made comment stripping quote-aware and updated active milestone modules list
+- **Build status**: PASS (terraform validate & plan exit 0; python tests exit 0; powershell validator exits 0)
 - **Pending issues**: None
 
 ## Quality Status
-- **Build/test result**: All acceptance criteria and unit tests implemented and self-verified
-- **Lint status**: 0 violations, clean Python code
-- **Tests added/modified**: `test_tesoreria.py` (3 comprehensive suites), `pruebas_unitarias/test_riesgo_tesoreria_metricas.py` (10 test cases)
+- **Build/test result**: All checks passing (112 resources planned; 17/17 pytest passed; 4/4 master suites passed)
+- **Lint status**: `terraform fmt -check -diff -recursive` clean (0 diff)
+- **Tests added/modified**: Verified against `test_e2e_verification.py`, `test_infrastructure_syntax.py`, `validate_terraform.ps1`, `run_all_tests.py`
 
 ## Loaded Skills
 - None
+
+## Key Decisions Made
+- Pub/Sub orderbook topic alias `hft-orderbook-depth` included alongside `hft-market-orderbook` to preserve test suite compatibility.
+- Dynamic boot disk selection (`hyperdisk-balanced` for C4, `pd-ssd` for C3) implemented in `modules/compute/main.tf`.
+- Comment stripping in `test_infrastructure_syntax.py` made string-aware so URL slashes like `https://...` inside quotes are not treated as comments.
+
+## Artifact Index
+- DISPATCH.md — Assignment instructions
+- BRIEFING.md — Persistent context
+- progress.md — Liveness heartbeat and status
+- report.md — Implementation report
+- handoff.md — 5-component handoff report
