@@ -163,3 +163,56 @@ Generate a detailed markdown report (`architecture_summary.md`) explaining the e
 ## 2026-10-10T14:45:33Z
 
 The server restarted and all subagents were stopped. Please resume the Milestone 6 evaluation and proceed to the Victory Audit.
+
+
+## 2026-10-10T17:53:44Z
+
+# Teamwork Project Prompt — Draft
+
+> Status: Ready for launch — awaiting user approval
+> Goal: Craft prompt → get user approval → delegate to teamwork_preview
+> Requested team: Equipo Completo (Full Team) para desarrollo y refactorización en paralelo.
+
+El objetivo es desarrollar y estructurar el sistema algorítmico **CONTINUITY HFT para Binance Predicciones**, enfocado en multiplicar x2 el capital al mes con capitales pequeños, medianos y grandes. El equipo deberá migrar la arquitectura de SQLite a GCP (Redis/Bigtable) para resolver el Crash Loop actual, e integrar el motor de tesorería autónoma, las 4 Fases de transición HFT, y la Estrategia V de Arbitraje AMM usando exclusivamente la API de predicciones de eventos deportivos y ESports.
+
+Working directory: c:/Users/alanr/AE_ecosistema/CONTINUITYEM
+Integrity mode: benchmark
+
+## Requirements
+
+### R1. Refactorización a Arquitectura GCP (Resolución de Crash Loop)
+Eliminar por completo la dependencia local de `sqlite3` (`continuity_state.db` / `hft.db`). Migrar `StateRegistry` y la gestión de la `cola_partidos_pendientes` para que lean y escriban en **Cloud Memorystore (Redis)** para estado ultra-rápido en vivo (<50ns) y **Cloud Bigtable** para almacenamiento histórico. 
+
+### R2. Módulo de Tesorería Autónoma y Fórmulas Financieras
+Implementar el motor financiero basado en las fórmulas solicitadas: Tamaño de Posición Real, Capital Acumulado (Interés Compuesto), EV, ROI, Yield, y Criterio de Kelly. El sistema debe automatizar el ciclo de aceleración ($10 -> $100 -> $1,000 USD) y, al cruzar la meta de 4 cifras, ejecutar de forma autónoma el "Harvesting" (Retiro del 35% de utilidades a MXN, 60% reinversión, 40% gastos).
+
+### R3. Orquestación de las 4 Fases HFT y Estrategia V (AMM Sniping)
+Implementar el ciclo continuo unificado:
+- Fase 1 (Pre-Match): Especulación de Spread y desequilibrio de bloques (80% volumen Bid vs Ask).
+- Fase 2 (Transición T-5m): `limpiar_mesa`, cancelación atómica y rebalanceo a 0% exposición.
+- Fase 3 (In-Play): Sniping de latencia contra el oráculo antes del `MarketStatus: SUSPENDED`.
+- Fase 4 (Time Decay): Compra del YES al Empate en min 75-90 con venta tras 90s.
+- Estrategia V: Caza de ineficiencias de la curva AMM y arbitraje de paridad binaria terminal (YES + NO < 1.00 - fees).
+
+## Acceptance Criteria
+
+### Integración Cloud y Persistencia
+- [ ] El contenedor Docker arranca y se mantiene estable sin errores de permisos de escritura local (`sqlite3.OperationalError`).
+- [ ] El orquestador se conecta exitosamente a Redis usando la IP configurada en las variables de entorno para gestionar la memoria en vivo.
+
+### Exactitud Financiera
+- [ ] Ejecutar un script de prueba que demuestre que al alcanzar $1,000 USD en el balance, el bot calcula y aisla exactamente el 35% de la utilidad neta mensual para su posterior retiro.
+- [ ] Las fórmulas de métricas (Win Rate, EV, ROI, Tamaño de Posición) pasan los tests unitarios garantizando precisión matemática al cuarto decimal.
+
+### Ejecución de Lógica HFT
+- [ ] La Fase 2 verifica programáticamente la cancelación total de órdenes al faltar 5 minutos para el evento, validando que la exposición regrese a 0%.
+- [ ] La Estrategia V detecta escenarios donde `Ask(YES) + Ask(NO) < 1.00 - fees` y genera atómicamente la propuesta de compra dual para ambos contratos.
+
+
+## 2026-10-10T18:00:42Z
+
+The user has added an important clarification/requirement for the ongoing project:
+
+"que haga operaciones y cierre antes y durante al cumplir con el valor esperado asegurate de eso de los eventos deportivos y deESports"
+
+Please ensure the implementation explicitly supports opening and closing positions BOTH pre-match (antes) and in-play (durante) the moment the target Expected Value (EV) is reached, without waiting for the event to finish. Also, ensure the logic applies universally to both regular Sports and ESports prediction markets on Binance. Please integrate this into the Acceptance Criteria and verification tests.

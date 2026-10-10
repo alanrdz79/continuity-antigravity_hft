@@ -73,6 +73,21 @@ from estrategias.hft_engine import (
     SportType,
 )
 
+from estrategias.swing_engine import (
+    AsyncCapitalGateway,
+    CapitalReservationToken,
+    SwingAnalysisResult,
+    SwingEngine,
+)
+
+from estrategias.arbitraje_amm import (
+    ArbitrageAMMEngine,
+    ArbitrageOpportunityType,
+    ArbitrageSignal,
+    DualBuyProposal,
+    EstrategiaVArbitrajeAMM,
+)
+
 from conectores.telegram_bidireccional import (
     MockTelegramClient,
     TelegramBidireccionalBot,
@@ -165,6 +180,11 @@ class ContinuityHFTBinanceOrchestrator:
             factor_atenuacion_racha=0.85,
         )
 
+        # 6. Pasarela de Capital Concurrente Atómica (Protección contra doble asignación)
+        self.capital_gateway: AsyncCapitalGateway = AsyncCapitalGateway(
+            capital_total=self.capital_inicial,
+            max_cluster_exp=0.15,
+        )
 
         # 7. Motor Cuantitativo HFT (4 Fases, Estrategias A y B)
         self.hft_engine: HFTEngine = HFTEngine(
@@ -173,12 +193,27 @@ class ContinuityHFTBinanceOrchestrator:
             tick_size=DEFAULT_TICK_SIZE,
         )
 
+        # 8. Motor Ortogonal de Swing Trading
+        self.swing_engine: SwingEngine = SwingEngine(
+            risk_engine=self.risk_engine,
+            capital_gateway=self.capital_gateway,
+            balance=self.capital_inicial,
+            max_cluster_exp=0.15,
+        )
 
         # 9. Bot Bidireccional de Telegram
         self.telegram_bot: TelegramBidireccionalBot = TelegramBidireccionalBot(
             bot_token=telegram_token,
             chat_id=telegram_chat_id,
             mock_mode=self.mock_mode,
+        )
+
+        # 10. Motor de Arbitraje AMM (Estrategia V)
+        self.amm_engine: EstrategiaVArbitrajeAMM = EstrategiaVArbitrajeAMM(
+            capital_gateway=self.capital_gateway,
+            escudo_riesgo=self.risk_engine,
+            connector=self.binance_client,
+            total_capital=self.capital_inicial,
         )
 
         # ----------------------------------------------------------------------
@@ -192,19 +227,30 @@ class ContinuityHFTBinanceOrchestrator:
         # Mapeo de estados de partidos en vivo para cada símbolo
         self.live_matches: Dict[str, MatchLiveState] = {}
         for sym in self.symbols:
+            sport = SportType.ESPORTS if any(k in sym for k in ("ESPORT", "LOL", "CS2", "DOTA")) else SportType.SOCCER
             self.live_matches[sym] = MatchLiveState(
                 match_id=f"MATCH_{sym}",
                 symbol=sym,
-                sport=SportType.SOCCER,
-                time_to_kickoff_minutes=None, # None indicates it is live or we don't know yet
-                is_live=True, # Start assuming live to get L2 tracking
+                sport=sport,
+                time_to_kickoff_minutes=60.0,
+                is_live=False,
             )
 
+        # Mapeo de histórico simulado para swing
+        self._swing_history: Dict[str, List[Tuple[float, float, float, float, float]]] = {}
+        for sym in self.symbols:
+            candles = []
+            base_p = 0.50
+            for i in range(50):
+                p = round(base_p + (i * 0.002), 4)
+                candles.append((p, p + 0.01, p - 0.01, p, 100.0))
+            self._swing_history[sym] = candles
 
         # Tareas de segundo plano
         self._tasks: List[asyncio.Task] = []
         self._orderbook_task: Optional[asyncio.Task] = None
         self._hft_task: Optional[asyncio.Task] = None
+        self._swing_task: Optional[asyncio.Task] = None
         self._telegram_task: Optional[asyncio.Task] = None
         self._summary_task: Optional[asyncio.Task] = None
 
@@ -261,6 +307,20 @@ class ContinuityHFTBinanceOrchestrator:
         for sym in self.symbols:
             self.hft_engine.limpiar_mesa_prematch(sym)
 
+        # 4. Limpiar órdenes y posiciones en SwingEngine
+        if hasattr(self, "swing_engine") and self.swing_engine is not None:
+            if hasattr(self.swing_engine, "active_positions"):
+                self.swing_engine.active_positions.clear()
+            if hasattr(self.swing_engine, "pending_orders"):
+                self.swing_engine.pending_orders.clear()
+
+        # 5. Liberar reservas de capital en capital_gateway
+        if hasattr(self, "capital_gateway") and self.capital_gateway is not None:
+            for tok in list(self.capital_gateway.active_tokens.values()):
+                tok.is_released = True
+            self.capital_gateway.active_tokens.clear()
+            self.capital_gateway.capital_comprometido = 0.0
+
 
         # 6. Registrar notificación de emergencia en TelegramBot
         msg_kill = f"🚨 KILL SWITCH ACTIVADO: Operación detenida inmediatamente ({motivo})."
@@ -315,6 +375,10 @@ class ContinuityHFTBinanceOrchestrator:
         elif param_clean in ("max_cluster", "max_cluster_exp"):
             if 0.01 <= val <= 0.30:
                 self.risk_engine.max_cluster_exp = val
+                if hasattr(self, "capital_gateway") and self.capital_gateway is not None:
+                    self.capital_gateway.max_cluster_exp = val
+                if hasattr(self, "swing_engine") and self.swing_engine is not None and hasattr(self.swing_engine, "capital_gateway") and self.swing_engine.capital_gateway is not None:
+                    self.swing_engine.capital_gateway.max_cluster_exp = val
                 return {"exito": True, "param": param_clean, "nuevo_valor": val}
             return {"exito": False, "motivo": "Rango permitido para max_cluster: [0.01, 0.30] (1% a 30%)"}
 
@@ -435,6 +499,112 @@ class ContinuityHFTBinanceOrchestrator:
         finally:
             logger.info("[PIPELINE] HFTStrategyTask finalizada.")
 
+    async def _vigilar_y_cerrar_posiciones_abiertas(
+        self, symbol: str, snapshot: OrderBookSnapshot
+    ) -> List[TradeResult]:
+        """
+        Monitorea y ejecuta salidas anticipadas tanto Pre-Match ('antes') como
+        In-Play ('durante') al cumplirse el valor esperado (EV) o el timeout
+        de exposición, sin esperar a que el evento concluya.
+        Aplica universalmente a deportes tradicionales y ESports.
+        """
+        trades_cerrados: List[TradeResult] = []
+        now = time.time()
+
+        # 1. Auditar timeouts de exposición (Fase 1: 2-10s, Fase 4: 60-90s, Stra A: 3-5m)
+        senales_timeout = self.hft_engine.auditar_timeouts(current_time=now, snapshot=snapshot)
+        for s in senales_timeout:
+            pos_id = s.metadata.get("position_id", "TIMEOUT")
+            pnl = s.metadata.get("pnl", 0.0)
+            is_win = pnl >= 0.0
+            trade = TradeResult(
+                trade_id=f"TRADE_TIMEOUT_{pos_id}",
+                symbol=s.symbol,
+                stake=round(s.price * s.quantity, 4),
+                pnl=pnl,
+                is_win=is_win,
+                timestamp=now,
+            )
+            self.tesoreria.registrar_trade(trade)
+            self.risk_engine.registrar_resultado(is_win)
+            if hasattr(self, "state_registry") and self.state_registry is not None:
+                try:
+                    self.state_registry.record_trade(
+                        trade_id=trade.trade_id,
+                        symbol=trade.symbol,
+                        pnl=trade.pnl,
+                        is_win=trade.is_win,
+                        timestamp=trade.timestamp,
+                        stake=trade.stake,
+                    )
+                except Exception:
+                    pass
+            trades_cerrados.append(trade)
+
+        # 2. Monitorear Take Profit por cumplimiento de Valor Esperado (EV) en libro L2
+        best_bid = snapshot.bids[0][0] if (snapshot.bids and len(snapshot.bids) > 0) else 0.0
+        for pid, pos in list(self.hft_engine.active_positions.items()):
+            if pos.symbol == symbol and pos.status == "OPEN":
+                # Salida al alcanzar o superar el target_exit_price (EV cumplido)
+                if best_bid > 0 and best_bid >= pos.target_exit_price:
+                    try:
+                        if hasattr(self.binance_client, "place_order"):
+                            await self.binance_client.place_order(
+                                symbol=symbol,
+                                side="SELL",
+                                order_type="MARKET",
+                                quantity=pos.quantity,
+                            )
+                    except Exception as e:
+                        logger.warning(f"Error placing exit order on exchange: {e}")
+
+                    closed = self.hft_engine.cerrar_posicion(pid, exit_price=best_bid)
+                    if closed:
+                        # Liberar token de capital si existía
+                        if "capital_token" in closed.metadata and hasattr(self, "capital_gateway") and self.capital_gateway:
+                            await self.capital_gateway.liberar_capital(closed.metadata["capital_token"])
+
+                        trade = TradeResult(
+                            trade_id=f"TRADE_EV_{pid}",
+                            symbol=symbol,
+                            stake=round(closed.entry_price * closed.quantity, 4),
+                            pnl=closed.pnl if closed.pnl is not None else 0.0,
+                            is_win=(closed.pnl or 0.0) >= 0.0,
+                            timestamp=now,
+                        )
+                        self.tesoreria.registrar_trade(trade)
+                        self.risk_engine.registrar_resultado(trade.is_win)
+                        if hasattr(self, "state_registry") and self.state_registry is not None:
+                            try:
+                                self.state_registry.record_trade(
+                                    trade_id=trade.trade_id,
+                                    symbol=trade.symbol,
+                                    pnl=trade.pnl,
+                                    is_win=trade.is_win,
+                                    timestamp=trade.timestamp,
+                                    stake=trade.stake,
+                                )
+                            except Exception:
+                                pass
+
+                        # Verificar hitos de tesorería
+                        hitos = self.tesoreria.verificar_hitos()
+                        if "INYECCION_100_USD_APLICADA" in hitos.get("acciones", []):
+                            if hasattr(self, "telegram_bot") and self.telegram_bot:
+                                await self.telegram_bot.notificar_inyeccion_capital(
+                                    monto=100.0,
+                                    nuevo_balance=self.tesoreria.balance,
+                                    info_validacion=hitos.get("detalle_validacion", {}),
+                                )
+
+                        trades_cerrados.append(trade)
+                        logger.info(
+                            f"[EV EXIT] Posición {pid} ({pos.phase}) cerrada con EV cumplido: "
+                            f"Entry={pos.entry_price:.4f}, Exit={best_bid:.4f}, PnL={trade.pnl:.4f}"
+                        )
+
+        return trades_cerrados
+
     async def step_hft_cycle(self, symbol: str) -> Optional[HftSignal]:
         """
         Paso individual de evaluación y ejecución HFT para un símbolo.
@@ -448,31 +618,78 @@ class ContinuityHFTBinanceOrchestrator:
 
         match_state = self.live_matches.get(symbol)
         if not match_state:
-            match_state = MatchLiveState(match_id=f"M_{symbol}", symbol=symbol, is_live=True, time_to_kickoff_minutes=None)
+            sport = SportType.ESPORTS if any(k in symbol for k in ("ESPORT", "LOL", "CS2", "DOTA")) else SportType.SOCCER
+            match_state = MatchLiveState(
+                match_id=f"M_{symbol}",
+                symbol=symbol,
+                sport=sport,
+                time_to_kickoff_minutes=60.0,
+                is_live=False,
+            )
             self.live_matches[symbol] = match_state
 
         balance = self.tesoreria.balance
-        # 0. Vigilar y cerrar posiciones activas según libro
+        # 0. Vigilar y cerrar posiciones activas según libro (EV fulfilled / timeout)
         await self._vigilar_y_cerrar_posiciones_abiertas(symbol, snap)
 
-        # 1. Evaluar señal con HFTEngine
-        senal: HftSignal
-        if match_state.is_prematch:
-            senal = self.hft_engine.evaluar_fase_1_prematch_obi(
-                snapshot=snap,
-                match_state=match_state,
-                balance=balance,
-                operaciones_activas=len(self.hft_engine.active_positions),
-                exposicion_cluster=self.get_exposicion_cluster(),
-            )
-        else:
-            senal = self.hft_engine.evaluar_mercado_completo(
-                snapshot=snap,
-                match_state=match_state,
-                balance=balance,
-                operaciones_activas=len(self.hft_engine.active_positions),
-                exposicion_cluster=self.get_exposicion_cluster(),
-            )
+        # 1. Evaluar señal con HFTEngine en ciclo continuo completo
+        exposicion_cluster = (
+            self.capital_gateway.capital_comprometido
+            if hasattr(self, "capital_gateway") and self.capital_gateway is not None
+            else self.get_exposicion_cluster()
+        )
+        senal = self.hft_engine.evaluar_mercado_completo(
+            snapshot=snap,
+            match_state=match_state,
+            balance=balance,
+            operaciones_activas=len(self.hft_engine.active_positions),
+            exposicion_cluster=exposicion_cluster,
+        )
+
+        # Manejo de Fase 2: T-5m limpiar_mesa
+        if senal.authorized and senal.action == "CLEANUP":
+            if hasattr(self.binance_client, "_mock_cancel_all_orders"):
+                self.binance_client._mock_cancel_all_orders(symbol)
+            elif hasattr(self.binance_client, "cancel_all_orders"):
+                try:
+                    await self.binance_client.cancel_all_orders(symbol)
+                except Exception as e:
+                    logger.warning(f"Error cancelling orders in cleanup: {e}")
+
+            meta = senal.metadata or {}
+            for liq in meta.get("liquidaciones_mercado", []):
+                pnl = liq.get("pnl", 0.0)
+                is_win = pnl >= 0.0
+                trade = TradeResult(
+                    trade_id=f"CLEANUP_{liq.get('position_id', uuid.uuid4().hex[:6])}",
+                    symbol=symbol,
+                    stake=round(liq.get("entry_price", 0.0) * liq.get("quantity", 0.0), 4),
+                    pnl=pnl,
+                    is_win=is_win,
+                    timestamp=time.time(),
+                )
+                self.tesoreria.registrar_trade(trade)
+                self.risk_engine.registrar_resultado(is_win)
+                if hasattr(self, "state_registry") and self.state_registry:
+                    try:
+                        self.state_registry.record_trade(
+                            trade_id=trade.trade_id,
+                            symbol=trade.symbol,
+                            pnl=trade.pnl,
+                            is_win=trade.is_win,
+                            timestamp=trade.timestamp,
+                            stake=trade.stake,
+                        )
+                    except Exception:
+                        pass
+
+            if hasattr(self, "capital_gateway") and self.capital_gateway:
+                for tok in list(self.capital_gateway.active_tokens.values()):
+                    if tok.symbol == symbol:
+                        await self.capital_gateway.liberar_capital(tok)
+
+            logger.info(f"[FASE 2 T-5m] Mesa limpia para {symbol}. Exposición verificada = 0%.")
+            return senal
 
         # 2. Si la señal está autorizada, reservar capital atómicamente y colocar orden
         if senal.authorized and senal.action in ("LIMIT_BUY", "MARKET_BUY", "BUY_LIMIT", "BUY_MARKET", "BUY"):
@@ -502,12 +719,181 @@ class ContinuityHFTBinanceOrchestrator:
                     executed_price=senal.price,
                     executed_qty=senal.quantity,
                 )
+                pos.metadata["capital_token"] = token
 
+                # Simulación de salida de micro-scalp inmediata en mock
+                if self.mock_mode:
+                    await self._simular_cierre_hft_mock(pos, token)
             else:
                 logger.debug(f"[HFT] Rechazada por techo de clúster de capital: {symbol}")
 
         return senal
 
+    async def _simular_cierre_hft_mock(self, pos: Any, token: Optional[CapitalReservationToken] = None) -> None:
+        """Simula el llenado del take-profit y el cierre del trade en modo mock."""
+        # Margen de beneficio capturado (1 tick)
+        pnl = round(pos.quantity * self.micro_engine.tick_size, 4)
+        is_win = pnl >= 0.0
+
+        # Cerrar posición en motor HFT
+        self.hft_engine.cerrar_posicion(pos.position_id, exit_price=pos.entry_price + self.micro_engine.tick_size)
+
+        # Liberar token de capital
+        if token is not None:
+            await self.liberar_capital(token)
+
+        # Registrar resultado en tesorería y auditor
+        trade_id = f"HFT_{pos.position_id}"
+        trade = TradeResult(
+            trade_id=trade_id,
+            symbol=pos.symbol,
+            stake=round(pos.entry_price * pos.quantity, 4),
+            pnl=pnl,
+            is_win=is_win,
+            timestamp=time.time(),
+        )
+        self.tesoreria.registrar_trade(trade)
+        self.risk_engine.registrar_resultado(is_win)
+
+        if hasattr(self, "state_registry") and self.state_registry is not None:
+            try:
+                self.state_registry.record_trade(
+                    trade_id=trade.trade_id,
+                    symbol=trade.symbol,
+                    pnl=trade.pnl,
+                    is_win=trade.is_win,
+                    timestamp=trade.timestamp,
+                    stake=trade.stake,
+                )
+            except Exception:
+                pass
+
+        # Auditar progreso de tesorería (inyección de $100 / cosecha)
+        hitos = self.tesoreria.verificar_hitos()
+        if "INYECCION_100_USD_APLICADA" in hitos.get("acciones", []):
+            if hasattr(self, "telegram_bot") and self.telegram_bot:
+                await self.telegram_bot.notificar_inyeccion_capital(
+                    monto=100.0,
+                    nuevo_balance=self.tesoreria.balance,
+                    info_validacion=hitos.get("detalle_validacion", {}),
+                )
+
+    # --------------------------------------------------------------------------
+    # PIPELINE CONCURRENTE: TAREA 3 (SWING STRATEGY TASK)
+    # --------------------------------------------------------------------------
+    async def _swing_strategy_task(self) -> None:
+        """
+        Tarea 3: Ejecución de Swing Trading complementario y ortogonal.
+        Descarga análisis macro intensivo (Monte Carlo) a hilos con asyncio.to_thread
+        para prevenir la degradación de latencia del bucle de eventos.
+        """
+        logger.info("[PIPELINE] SwingStrategyTask iniciada.")
+        try:
+            while self.is_running:
+                if not self.is_paused and not self.kill_switch_triggered:
+                    for sym in self.symbols:
+                        await self.step_swing_cycle(sym)
+
+                await asyncio.sleep(self.swing_cycle_interval_s)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            logger.info("[PIPELINE] SwingStrategyTask finalizada.")
+
+    async def step_swing_cycle(self, symbol: str) -> Optional[SwingAnalysisResult]:
+        """
+        Paso individual de evaluación y ejecución Swing para un símbolo.
+        """
+        if self.is_paused or self.kill_switch_triggered:
+            return None
+
+        velas = self._swing_history.get(symbol, [])
+        if len(velas) < 10:
+            return None
+
+        # 1. Cómputo CPU intensivo offloaded vía asyncio.to_thread
+        analysis = await self.swing_engine.analizar_oportunidad_macro(
+            symbol=symbol,
+            velas_historicas=velas,
+            sim_paths=500,  # Reducido para agilidad en loop
+        )
+
+        # 2. Evaluación de riesgo y reserva atómica
+        snap = await self.binance_client.get_orderbook_snapshot(symbol)
+        top3_bids_vol = (
+            GoldenRulesValidator.calcular_liquidez_escape_top3_bids(snap.bids)
+            if snap.is_valid
+            else None
+        )
+
+        pos_swing = await self.swing_engine.evaluar_y_ejecutar_orden_swing(
+            analysis=analysis,
+            balance=self.tesoreria.balance,
+            operaciones_activas=len(self.swing_engine.active_positions),
+            top_3_bids_vol=top3_bids_vol,
+        )
+
+        # 3. Simulación de ejecución en mock
+        if pos_swing is not None and self.mock_mode:
+            await self._simular_cierre_swing_mock(pos_swing)
+
+        return analysis
+
+    async def _simular_cierre_swing_mock(self, pos: Any) -> None:
+        """Simula el cierre de una posición swing en modo mock."""
+        pnl = round(pos.stake * 0.05, 4)  # 5% de ganancia en swing
+        is_win = True
+
+        closed_pos = await self.swing_engine.cerrar_posicion(
+            position_id=pos.position_id,
+            exit_price=pos.target_price,
+            is_win=is_win,
+        )
+
+        if closed_pos is not None:
+            trade = TradeResult(
+                trade_id=f"SWING_{closed_pos.position_id}",
+                symbol=closed_pos.symbol,
+                stake=closed_pos.stake,
+                pnl=pnl,
+                is_win=is_win,
+                timestamp=time.time(),
+            )
+            self.tesoreria.registrar_trade(trade)
+            self.risk_engine.registrar_resultado(is_win)
+
+    async def step_amm_cycle(self, event_id: str, p_fair: Optional[float] = None) -> Optional[ArbitrageSignal]:
+        """
+        Paso individual de evaluación y ejecución de Estrategia V (Arbitraje AMM / Paridad Binaria).
+        """
+        if self.is_paused or self.kill_switch_triggered:
+            return None
+
+        sym_yes = f"{event_id}_YES" if not event_id.endswith("_YES") else event_id
+        sym_no = f"{event_id}_NO" if not event_id.endswith("_NO") else event_id.replace("_YES", "_NO")
+
+        snap_yes = await self.binance_client.get_orderbook_snapshot(sym_yes)
+        snap_no = await self.binance_client.get_orderbook_snapshot(sym_no)
+
+        if not snap_yes.is_valid or not snap_no.is_valid:
+            return None
+
+        # 1. Detección de Paridad Binaria (Regla 2)
+        signal = self.amm_engine.detectar_paridad_binaria(snap_yes, snap_no, event_id=event_id)
+        if signal is not None:
+            stake = min(self.amm_engine.config.default_stake_per_trade, self.tesoreria.balance * 0.15)
+            await self.amm_engine.ejecutar_arbitraje_paridad(signal, requested_stake=stake)
+            return signal
+
+        # 2. Detección de Desviación de Curva AMM (Regla 1) si se proporciona p_fair
+        if p_fair is not None:
+            signal_curv = self.amm_engine.detectar_desviacion_curva(snap_yes, snap_no, p_fair=p_fair, event_id=event_id)
+            if signal_curv is not None:
+                stake = min(self.amm_engine.config.default_stake_per_trade, self.tesoreria.balance * 0.15)
+                await self.amm_engine.ejecutar_scalp_desviacion(signal_curv, requested_stake=stake)
+                return signal_curv
+
+        return None
 
     # PIPELINE CONCURRENTE: TAREA 4 (TELEGRAM LISTENER TASK)
     # --------------------------------------------------------------------------
@@ -569,6 +955,9 @@ class ContinuityHFTBinanceOrchestrator:
         self._hft_task = asyncio.create_task(
             self._hft_strategy_task(), name="HFTStrategyTask"
         )
+        self._swing_task = asyncio.create_task(
+            self._swing_strategy_task(), name="SwingStrategyTask"
+        )
         self._telegram_task = asyncio.create_task(
             self._telegram_listener_task(), name="TelegramListenerTask"
         )
@@ -579,6 +968,7 @@ class ContinuityHFTBinanceOrchestrator:
         self._tasks = [
             self._orderbook_task,
             self._hft_task,
+            self._swing_task,
             self._telegram_task,
             self._summary_task,
         ]

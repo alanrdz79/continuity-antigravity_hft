@@ -146,7 +146,7 @@ class AuditorMetricas:
         """
         if self.total_trades == 0:
             return 0.0
-        return float(self.operaciones_ganadoras / self.total_trades)
+        return round(float(self.operaciones_ganadoras / self.total_trades), 4)
 
     def calcular_capital_acumulado(self) -> float:
         """
@@ -164,7 +164,7 @@ class AuditorMetricas:
           B_N = B_0 * prod
         """
         if not self.historial:
-            return float(self.capital_inicial)
+            return round(float(self.capital_inicial), 4)
 
         b_actual = self.capital_inicial
         producto_compuesto = 1.0
@@ -191,7 +191,7 @@ class AuditorMetricas:
             b_actual = b_actual * factor_i
 
         b_n = self.capital_inicial * producto_compuesto
-        return float(b_n)
+        return round(float(b_n), 4)
 
     def calcular_roi(self) -> float:
         """
@@ -200,7 +200,7 @@ class AuditorMetricas:
         """
         if self.capital_inicial <= 0.0:
             return 0.0
-        return float(self.suma_pnl / self.capital_inicial)
+        return round(float(self.suma_pnl / self.capital_inicial), 4)
 
     def calcular_yield(self) -> float:
         """
@@ -209,7 +209,7 @@ class AuditorMetricas:
         """
         if self.suma_turnover <= 0.0:
             return 0.0
-        return float(self.suma_pnl / self.suma_turnover)
+        return round(float(self.suma_pnl / self.suma_turnover), 4)
 
     # --------------------------------------------------------------------------
     # 3. COMPUERTA DE VALIDACIÓN ESTADÍSTICA (Z-SCORE & P-VALUE)
@@ -331,15 +331,15 @@ class AuditorMetricas:
 
         return {
             "win_rate": round(wr, 4),
-            "capital_acumulado": round(cap_acumulado, 2),
+            "capital_acumulado": round(cap_acumulado, 4),
             "roi": round(roi, 4),
             "yield": round(rendimiento_yield, 4),
             "total_trades": self.total_trades,
             # Métricas extendidas de auditoría continua
             "operaciones_ganadoras": self.operaciones_ganadoras,
             "operaciones_perdedoras": self.operaciones_perdedoras,
-            "pnl_total": round(self.suma_pnl, 2),
-            "turnover_total": round(self.suma_turnover, 2),
+            "pnl_total": round(self.suma_pnl, 4),
+            "turnover_total": round(self.suma_turnover, 4),
             "z_score": round(z, 4),
             "p_value": round(p, 6),
         }

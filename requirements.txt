@@ -16,3 +16,7 @@ python-dotenv
 python-telegram-bot
 aiohttp
 websockets
+
+# GCP Cloud Persistence (Cloud Memorystore Redis & Cloud Bigtable)
+redis>=5.0.0
+google-cloud-bigtable>=2.21.0

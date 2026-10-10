@@ -36,11 +36,31 @@ import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import uuid
 
-from continuitis.microestructura_binance import OrderBookSnapshot
+from continuitis.microestructura_binance import OrderBookSnapshot, OrderProposal
 from continuitis.riesgo_binance import EscudoFinancieroBinance
 from estrategias.swing_engine import AsyncCapitalGateway, CapitalReservationToken
 
 logger = logging.getLogger("CONTINUITY.ArbitrajeAMM")
+
+
+def _extract_best_bid(snap: Any) -> Optional[float]:
+    if snap is None:
+        return None
+    if hasattr(snap, "best_bid") and snap.best_bid is not None:
+        return float(snap.best_bid)
+    if hasattr(snap, "bids") and snap.bids and len(snap.bids) > 0:
+        return float(snap.bids[0][0])
+    return None
+
+
+def _extract_best_ask(snap: Any) -> Optional[float]:
+    if snap is None:
+        return None
+    if hasattr(snap, "best_ask") and snap.best_ask is not None:
+        return float(snap.best_ask)
+    if hasattr(snap, "asks") and snap.asks and len(snap.asks) > 0:
+        return float(snap.asks[0][0])
+    return None
 
 
 # ==============================================================================
@@ -52,6 +72,24 @@ class ArbitrageOpportunityType(str, Enum):
     BINARY_PARITY = "BINARY_PARITY"              # Paridad determinista YES + NO < 1.00 - fees
     CURVE_DEVIATION_YES = "CURVE_DEVIATION_YES"  # Contrato YES infravalorado frente a P_fair
     CURVE_DEVIATION_NO = "CURVE_DEVIATION_NO"    # Contrato NO infravalorado frente a P_fair
+
+
+@dataclass(frozen=True)
+class DualBuyProposal:
+    """Propuesta atómica de compra dual generada por la Estrategia V."""
+    proposal_id: str
+    event_id: str
+    symbol_yes: str
+    symbol_no: str
+    price_yes: float
+    price_no: float
+    quantity: float
+    sum_asks: float
+    fees_total: float
+    net_edge: float
+    order_yes: OrderProposal
+    order_no: OrderProposal
+    timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
@@ -78,6 +116,7 @@ class ArbitrageSignal:
     target_price: float = 0.0
     max_volume: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    dual_proposal: Optional[DualBuyProposal] = None
 
     @property
     def is_risk_free_parity(self) -> bool:
@@ -269,8 +308,8 @@ class EstrategiaVArbitrajeAMM:
             logger.debug(f"[ArbitrajeAMM] Paridad rechazada por estado de mercado: {motivo}")
             return None
 
-        ask_yes = snapshot_yes.best_ask
-        ask_no = snapshot_no.best_ask
+        ask_yes = _extract_best_ask(snapshot_yes)
+        ask_no = _extract_best_ask(snapshot_no)
 
         # Validar existencia de posturas de venta
         if ask_yes is None or ask_no is None:
@@ -297,10 +336,44 @@ class EstrategiaVArbitrajeAMM:
         if net_edge <= 0.0 or net_edge < self.config.min_parity_edge:
             return None
 
-        bid_yes = snapshot_yes.best_bid
-        bid_no = snapshot_no.best_bid
+        bid_yes = _extract_best_bid(snapshot_yes)
+        bid_no = _extract_best_bid(snapshot_no)
         eid = event_id or snapshot_yes.symbol.split("_")[0]
         sig_id = f"SIG_PARITY_{uuid.uuid4().hex[:8]}_{int(time.time()*1000)}"
+
+        order_yes = OrderProposal(
+            symbol=snapshot_yes.symbol,
+            side="BUY",
+            target_price=ask_yes,
+            stop_price=round(ask_yes * 0.95, 4),
+            estimated_prob=round(ask_yes / sum_asks, 4) if sum_asks > 0 else 0.5,
+            payout_decimal=round(1.0 / ask_yes, 4) if ask_yes > 0 else 2.0,
+            strategy_id="ESTRATEGIA_V_PARIDAD",
+        )
+        order_no = OrderProposal(
+            symbol=snapshot_no.symbol,
+            side="BUY",
+            target_price=ask_no,
+            stop_price=round(ask_no * 0.95, 4),
+            estimated_prob=round(ask_no / sum_asks, 4) if sum_asks > 0 else 0.5,
+            payout_decimal=round(1.0 / ask_no, 4) if ask_no > 0 else 2.0,
+            strategy_id="ESTRATEGIA_V_PARIDAD",
+        )
+        dual_prop = DualBuyProposal(
+            proposal_id=f"PROP_{sig_id}",
+            event_id=eid,
+            symbol_yes=snapshot_yes.symbol,
+            symbol_no=snapshot_no.symbol,
+            price_yes=ask_yes,
+            price_no=ask_no,
+            quantity=round(max_vol, 4),
+            sum_asks=sum_asks,
+            fees_total=fees_total,
+            net_edge=net_edge,
+            order_yes=order_yes,
+            order_no=order_no,
+            timestamp=time.time(),
+        )
 
         signal = ArbitrageSignal(
             signal_id=sig_id,
@@ -319,6 +392,7 @@ class EstrategiaVArbitrajeAMM:
             target_price=sum_asks,
             max_volume=round(max_vol, 4),
             timestamp=time.time(),
+            dual_proposal=dual_prop,
         )
 
         logger.info(
@@ -355,8 +429,8 @@ class EstrategiaVArbitrajeAMM:
         if not (0.0 < p_fair < 1.0):
             return None
 
-        ask_yes = snapshot_yes.best_ask
-        ask_no = snapshot_no.best_ask
+        ask_yes = _extract_best_ask(snapshot_yes)
+        ask_no = _extract_best_ask(snapshot_no)
         if ask_yes is None or ask_no is None or ask_yes <= 0.0 or ask_no <= 0.0:
             return None
 
@@ -387,8 +461,8 @@ class EstrategiaVArbitrajeAMM:
                 symbol_no=snapshot_no.symbol,
                 best_ask_yes=ask_yes,
                 best_ask_no=ask_no,
-                best_bid_yes=snapshot_yes.best_bid,
-                best_bid_no=snapshot_no.best_bid,
+                best_bid_yes=_extract_best_bid(snapshot_yes),
+                best_bid_no=_extract_best_bid(snapshot_no),
                 fees_total=fee_yes,
                 net_edge=net_edge_yes,
                 p_fair=p_fair_yes,
@@ -414,8 +488,8 @@ class EstrategiaVArbitrajeAMM:
                 symbol_no=snapshot_no.symbol,
                 best_ask_yes=ask_yes,
                 best_ask_no=ask_no,
-                best_bid_yes=snapshot_yes.best_bid,
-                best_bid_no=snapshot_no.best_bid,
+                best_bid_yes=_extract_best_bid(snapshot_yes),
+                best_bid_no=_extract_best_bid(snapshot_no),
                 fees_total=fee_no,
                 net_edge=net_edge_no,
                 p_fair=p_fair_no,
@@ -834,7 +908,7 @@ class EstrategiaVArbitrajeAMM:
                 if snapshot is None or not snapshot.bids:
                     continue
 
-                best_bid = snapshot.best_bid or 0.0
+                best_bid = _extract_best_bid(snapshot) or 0.0
                 elapsed_s = current_time - pos.entry_timestamp
                 qty = pos.quantities.get(target_symbol, 0.0)
                 entry_px = pos.entry_prices.get(target_symbol, 0.0)
@@ -904,3 +978,7 @@ class EstrategiaVArbitrajeAMM:
                     cerradas += 1
             self.active_positions.clear()
             return cerradas
+
+
+# Alias formal contract PROJECT.md / DISPATCH.md
+ArbitrageAMMEngine = EstrategiaVArbitrajeAMM

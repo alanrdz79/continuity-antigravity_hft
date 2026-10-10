@@ -80,6 +80,15 @@ class GestorTesoreria:
         # Registro de eventos de inyección y cosecha
         self.log_eventos: List[Dict[str, Any]] = []
 
+        # Bóvedas de custodia contable de cosecha autónoma
+        self.capital_aislado_cosecha_usd: float = 0.0
+        self.capital_aislado_cosecha_mxn: float = 0.0
+        self.fondo_gastos_operacion_usd: float = 0.0
+        self.fondo_reinversion_total_usd: float = 0.0
+        self.capital_base_post_cosecha: float = float(balance_inicial)
+        self.cosechas_ejecutadas: List[Dict[str, Any]] = []
+        self.auto_cosechar_en_hitos: bool = False
+
     # --------------------------------------------------------------------------
     # 1. REGISTRO DE TRADES
     # --------------------------------------------------------------------------
@@ -99,6 +108,7 @@ class GestorTesoreria:
         n_min: int = 300,
         p_umbral: float = 0.05,
         forzar_validacion: Optional[bool] = None,
+        auto_cosechar: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Verifica el cruce de umbrales ($100 y $1,000 USD).
@@ -106,10 +116,14 @@ class GestorTesoreria:
         Regla de Inyección $10 -> $100 USD (+100 USD event):
         - Solo se autoriza si balance >= 100.0 USD, no ha sido inyectado previamente,
           y se cumple la compuerta de validación empírica:
-          N >= 300 trades, p-value < 0.05, EV / Yield neto > 0.
+          N >= 300 trades, p-value < 0.05 (Z > 1.645), EV / Yield neto > 0.
+
+        Regla de Cosecha Autónoma (>= $1,000 USD):
+        - Si auto_cosechar es True, ejecuta autónomamente el protocolo de cosecha del 35% a MXN.
         """
         acciones: List[str] = []
         validacion_info: Optional[Dict[str, Any]] = None
+        detalle_cosecha: Optional[Dict[str, Any]] = None
 
         # Evaluación dinámica de umbral de $1,000 USD
         if self.balance >= UMBRAL_COSECHA_1000:
@@ -120,6 +134,14 @@ class GestorTesoreria:
                     "evento": "MODO_COSECHA_AUTONOMA_DISPONIBLE",
                     "balance": self.balance,
                 })
+            else:
+                acciones.append("MODO_COSECHA_AUTONOMA_DISPONIBLE")
+
+            debe_cosechar = self.auto_cosechar_en_hitos if auto_cosechar is None else bool(auto_cosechar)
+            if debe_cosechar:
+                detalle_cosecha = self.ejecutar_cosecha_autonoma()
+                if detalle_cosecha.get("cosecha_ejecutada"):
+                    acciones.append("COSECHA_AUTONOMA_EJECUTADA")
         else:
             self.meta_1000_activada = False
 
@@ -152,11 +174,14 @@ class GestorTesoreria:
                 )
 
         return {
-            "balance_actual": round(self.balance, 2),
+            "balance_actual": round(self.balance, 4),
             "hito_100_inyectado": self.hito_100_inyectado,
             "meta_1000_activada": self.meta_1000_activada,
             "acciones": acciones,
             "detalle_validacion": validacion_info,
+            "detalle_cosecha": detalle_cosecha,
+            "capital_aislado_cosecha_usd": round(self.capital_aislado_cosecha_usd, 4),
+            "capital_aislado_cosecha_mxn": round(self.capital_aislado_cosecha_mxn, 4),
         }
 
     def auditar_progreso(self) -> Dict[str, Any]:
@@ -164,7 +189,74 @@ class GestorTesoreria:
         return self.verificar_hitos()
 
     # --------------------------------------------------------------------------
-    # 3. CORTE MENSUAL Y PROTOCOLO DE COSECHA / REINVERSIÓN
+    # 3. PROTOCOLO DE COSECHA AUTÓNOMA (>= $1,000 USD)
+    # --------------------------------------------------------------------------
+    def ejecutar_cosecha_autonoma(
+        self,
+        ganancia_neta: Optional[float] = None,
+        tipo_cambio_mxn: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ejecuta el protocolo autónomo de Harvesting al cruzar >= $1,000 USD (DISPATCH.md §5 & PROJECT.md):
+        - Cuando balance >= 1,000 USD, calcula ganancia neta (balance - capital_base_post_cosecha o valor provisto).
+        - Aisla exactamente 35% de ganancia neta a MXN (capital_aislado_cosecha_usd y capital_aislado_cosecha_mxn).
+        - Enruta 40% del remanente (26% total) a gastos de operación (fondo_gastos_operacion_usd).
+        - Retiene 60% del remanente (39% total) en reinversión compuesta (fondo_reinversion_total_usd).
+        - Actualiza el balance operativo: (balance - ganancia_neta) + reinversion_60.
+        - Garantiza precisión estricta a 4 decimales.
+        """
+        fx = float(tipo_cambio_mxn) if tipo_cambio_mxn is not None else self.tipo_cambio_mxn
+
+        if ganancia_neta is None:
+            base = getattr(self, "capital_base_post_cosecha", self.balance_inicial)
+            ganancia_neta = max(0.0, self.balance - base)
+
+        if ganancia_neta <= 0.0 or self.balance < UMBRAL_COSECHA_1000:
+            return {
+                "cosecha_ejecutada": False,
+                "motivo": "Condiciones no cumplidas (balance < 1000 o sin ganancia neta)",
+                "balance_actual": round(self.balance, 4),
+                "capital_aislado_cosecha_usd": round(self.capital_aislado_cosecha_usd, 4),
+                "capital_aislado_cosecha_mxn": round(self.capital_aislado_cosecha_mxn, 4),
+                "fondo_gastos_operacion_usd": round(self.fondo_gastos_operacion_usd, 4),
+                "fondo_reinversion_total_usd": round(self.fondo_reinversion_total_usd, 4),
+            }
+
+        self.meta_1000_activada = True
+        retiro_35 = round(ganancia_neta * PCT_COSECHA_AUTONOMA, 4)
+        retiro_mxn = round(retiro_35 * fx, 4)
+        utilidad_restante = round(ganancia_neta - retiro_35, 4)
+        operacion_40 = round(utilidad_restante * PCT_GASTOS_OPERACION, 4)
+        reinversion_60 = round(utilidad_restante * PCT_REINVERSION_COMPUESTA, 4)
+
+        # Aislamiento formal de fondos en bóvedas de custodia contable
+        self.capital_aislado_cosecha_usd = round(self.capital_aislado_cosecha_usd + retiro_35, 4)
+        self.capital_aislado_cosecha_mxn = round(self.capital_aislado_cosecha_mxn + retiro_mxn, 4)
+        self.fondo_gastos_operacion_usd = round(self.fondo_gastos_operacion_usd + operacion_40, 4)
+        self.fondo_reinversion_total_usd = round(self.fondo_reinversion_total_usd + reinversion_60, 4)
+
+        # Actualización del balance de trading
+        self.balance = round((self.balance - ganancia_neta) + reinversion_60, 4)
+        self.capital_base_post_cosecha = self.balance
+
+        resultado = {
+            "cosecha_ejecutada": True,
+            "ganancia_neta": round(ganancia_neta, 4),
+            "retiro_autonomo_35_usd": retiro_35,
+            "retiro_autonomo_mxn": retiro_mxn,
+            "gastos_operacion_40_usd": operacion_40,
+            "reinversion_compuesta_60_usd": reinversion_60,
+            "nuevo_balance_operativo": round(self.balance, 4),
+            "total_aislado_historico_usd": round(self.capital_aislado_cosecha_usd, 4),
+            "total_aislado_historico_mxn": round(self.capital_aislado_cosecha_mxn, 4),
+        }
+
+        self.cosechas_ejecutadas.append(resultado)
+        self.log_eventos.append({"evento": "COSECHA_AUTONOMA_EJECUTADA", "detalle": resultado})
+        return resultado
+
+    # --------------------------------------------------------------------------
+    # 4. CORTE MENSUAL Y PROTOCOLO DE DISTRIBUCIÓN
     # --------------------------------------------------------------------------
     def corte_mensual(
         self,
@@ -195,42 +287,55 @@ class GestorTesoreria:
                 "retiro_autonomo_mxn": 0.0,
                 "gastos_operacion_40": 0.0,
                 "reinversion_compuesta_60": 0.0,
-                "nuevo_balance": round(self.balance, 2),
+                "nuevo_balance": round(self.balance, 4),
             }
 
-        if self.balance >= UMBRAL_COSECHA_1000:
+        if self.balance >= UMBRAL_COSECHA_1000 or self.meta_1000_activada:
             self.meta_1000_activada = True
             # Fase >= 1,000 USD: Cosecha del 35% a MXN
-            retiro_35 = ganancia_mensual * PCT_COSECHA_AUTONOMA
-            retiro_mxn = retiro_35 * fx
-            utilidad_restante = ganancia_mensual - retiro_35
-            operacion_40 = utilidad_restante * PCT_GASTOS_OPERACION
-            reinversion_60 = utilidad_restante * PCT_REINVERSION_COMPUESTA
+            retiro_35 = round(ganancia_mensual * PCT_COSECHA_AUTONOMA, 4)
+            retiro_mxn = round(retiro_35 * fx, 4)
+            utilidad_restante = round(ganancia_mensual - retiro_35, 4)
+            operacion_40 = round(utilidad_restante * PCT_GASTOS_OPERACION, 4)
+            reinversion_60 = round(utilidad_restante * PCT_REINVERSION_COMPUESTA, 4)
+
+            # Acumular en bóvedas contables
+            self.capital_aislado_cosecha_usd = round(self.capital_aislado_cosecha_usd + retiro_35, 4)
+            self.capital_aislado_cosecha_mxn = round(self.capital_aislado_cosecha_mxn + retiro_mxn, 4)
+            self.fondo_gastos_operacion_usd = round(self.fondo_gastos_operacion_usd + operacion_40, 4)
+            self.fondo_reinversion_total_usd = round(self.fondo_reinversion_total_usd + reinversion_60, 4)
 
             # El balance retiene únicamente la porción de reinversión compuesta
-            self.balance = (self.balance - ganancia_mensual) + reinversion_60
+            self.balance = round((self.balance - ganancia_mensual) + reinversion_60, 4)
+            self.capital_base_post_cosecha = self.balance
 
             resultado = {
-                "retiro_autonomo_35": round(retiro_35, 2),
-                "retiro_autonomo_mxn": round(retiro_mxn, 2),
-                "gastos_operacion_40": round(operacion_40, 2),
-                "reinversion_compuesta_60": round(reinversion_60, 2),
-                "nuevo_balance": round(self.balance, 2),
+                "retiro_autonomo_35": round(retiro_35, 4),
+                "retiro_autonomo_mxn": round(retiro_mxn, 4),
+                "gastos_operacion_40": round(operacion_40, 4),
+                "reinversion_compuesta_60": round(reinversion_60, 4),
+                "nuevo_balance": round(self.balance, 4),
+                "total_aislado_historico_usd": round(self.capital_aislado_cosecha_usd, 4),
+                "total_aislado_historico_mxn": round(self.capital_aislado_cosecha_mxn, 4),
             }
         else:
             self.meta_1000_activada = False
             # Fase de aceleración (< 1,000 USD): 40% gastos / 60% reinversión
-            operacion_40 = ganancia_mensual * PCT_GASTOS_OPERACION
-            reinversion_60 = ganancia_mensual * PCT_REINVERSION_COMPUESTA
+            operacion_40 = round(ganancia_mensual * PCT_GASTOS_OPERACION, 4)
+            reinversion_60 = round(ganancia_mensual * PCT_REINVERSION_COMPUESTA, 4)
 
-            self.balance = (self.balance - ganancia_mensual) + reinversion_60
+            self.fondo_gastos_operacion_usd = round(self.fondo_gastos_operacion_usd + operacion_40, 4)
+            self.fondo_reinversion_total_usd = round(self.fondo_reinversion_total_usd + reinversion_60, 4)
+
+            self.balance = round((self.balance - ganancia_mensual) + reinversion_60, 4)
+            self.capital_base_post_cosecha = self.balance
 
             resultado = {
                 "retiro_autonomo_35": 0.0,
                 "retiro_autonomo_mxn": 0.0,
-                "gastos_operacion_40": round(operacion_40, 2),
-                "reinversion_compuesta_60": round(reinversion_60, 2),
-                "nuevo_balance": round(self.balance, 2),
+                "gastos_operacion_40": round(operacion_40, 4),
+                "reinversion_compuesta_60": round(reinversion_60, 4),
+                "nuevo_balance": round(self.balance, 4),
             }
 
         self.log_eventos.append({

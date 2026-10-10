@@ -408,7 +408,7 @@ class TestAnalyticalMetricsMathematicalAccuracyStress:
         assert math.isclose(b_before, b_after, rel_tol=1e-6)
         assert math.isclose(roi_before, roi_after, rel_tol=1e-6)
         # Yield should dilute because turnover increased from 10 to 30
-        assert auditor.calcular_yield() == 5.0 / 30.0
+        assert auditor.calcular_yield() == round(5.0 / 30.0, 4)
 
     def test_z_score_and_p_value_symmetry_and_accuracy(self):
         """Verify Z-score and p-value statistical properties across exact known cases."""

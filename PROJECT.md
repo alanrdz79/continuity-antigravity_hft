@@ -1,81 +1,73 @@
-# Project: CONTINUITY HFT Binance
+# Project: CONTINUITY HFT Binance (GCP Cloud Refactoring, Autonomous Treasury & HFT Engine)
 
 ## Architecture
-CONTINUITY HFT Binance is an autonomous, high-frequency modular algorithmic trading engine for sports prediction markets on Binance Spot. It operates across 7 sporting disciplines (Soccer, Baseball, American Football, Basketball, Tennis, Hockey, eSports) with primary focus on live and trending matches.
+CONTINUITY HFT Binance is an autonomous, ultra-low latency algorithmic trading system engineered for sports and eSports prediction markets on Binance Spot. The system refactors legacy local state to Google Cloud Platform (GCP) primitives: Cloud Memorystore (Redis) for live sub-microsecond state caching (<50ns) and Cloud Bigtable (SSD) for immutable historical trade persistence.
 
-### Concurrency Model
-- Asynchronous event loop (`asyncio`) coordinating high-throughput L2 order book updates and strategy executions.
-- `OrderBookListener`: Ingests L2 depth at sub-millisecond rates via WebSocket and maintains in-RAM snapshot.
-- `HFTStrategyTask`: Micro-scalping execution evaluating order book imbalance, spread, latency, and fast exits with latency <5ms (feed latency <800ms).
-- `SwingStrategyTask`: Multi-hour/daily orthogonal trend execution offloaded via `asyncio.to_thread` to prevent event loop blocking.
-- `RiskGateway`: Thread-safe, atomic capital reservation with `asyncio.Lock` preventing double-allocation and enforcing the 15% cluster cap and Top-3 BID liquidity constraint.
-- `TelegramController`: Interactive bidirectional command interface operating concurrently via async callbacks.
-
-### Technology Stack
-- Runtime: Python 3.14.2 (Windows 64-bit) in `.venv`
-- Networking: `websockets`, `aiohttp`, `curl_cffi`
-- Numerical: `numpy`, `scipy`
-- Storage: In-RAM $\mathcal{O}(1)$ dictionaries with asynchronous SQLite WAL persistence
-- Testing: `pytest`, `pytest-asyncio`
+### Core Architectural Components
+1. **High-Speed State Layer (Cloud Memorystore Redis & Cloud Bigtable)**:
+   - `StateRegistry`: Replaces all local SQLite databases (`continuity_state.db`, `hft.db`, `cerebrillum.db`). Manages live system balance, loss streak counters, circuit breakers, and pending match queue (`cola_partidos_pendientes`) in Redis. Historical trade records are stored in Cloud Bigtable using reverse-timestamp lexicographical row keys (`{symbol}#{Long.MAX_VALUE - timestamp_micros:019d}#{seq_id:010d}`). Includes transparent thread-safe in-memory mock fallback for local test execution without external GCP credentials.
+2. **Autonomous Treasury & Financial Engine (`continuitis/tesoreria.py`, `continuitis/riesgo_binance.py`, `continuitis/auditor_metricas.py`)**:
+   - Kelly Criterion formula ($f^* = \text{fraccion} \times (p(b+1)-1)/b$).
+   - Real Position Sizing ($S_{\text{nominal}}$) bounded by streak attenuation ($0.85^n$), 15% cluster capital cap, and Golden Rule 3 (Top-3 BIDs liquidity limit).
+   - Strict 4-decimal precision (`0.0001`) across all financial calculations (Win Rate, EV, ROI, Yield, Stake, Capital).
+   - Autonomous acceleration milestones ($10 \to 100 \to 1,000$ USD) and Autonomous Harvesting Protocol: upon reaching balance $\ge \$1,000$ USD, automatically isolates 35% net profit to MXN, allocating 40% of the remainder to expenses and 60% to compound reinvestment.
+3. **Continuous 4-Phase HFT & Strategy V Engine (`estrategias/hft_engine.py`, `estrategias/arbitraje_amm.py`)**:
+   - **Fase 1 (Pre-Match)**: Order Book Imbalance ($I \ge 0.60$, 80% volume dominance), spread $\le \$0.03$, Maker limit entry at Best Bid + 1 tick, target exit at Best Ask + 2 ticks with 2-10s exposure timeout.
+   - **Fase 2 (Transition T-5m)**: `limpiar_mesa` atomic cancellation of open orders and conversion of fills, verifying exactly 0% exposure prior to event start.
+   - **Fase 3 (In-Play)**: Oracle latency sniping on key match events prior to Binance market suspension (`MarketStatus: SUSPENDED`).
+   - **Fase 4 (Time Decay Scalp)**: Buy YES on Draw between min 75-90 with low danger index, holding 60-90s and exiting without waiting for match end.
+   - **Pre-Match & In-Play Target EV Early Exits (`_vigilar_y_cerrar_posiciones_abiertas`)**: Both pre-match ("antes") and in-play ("durante"), positions are monitored and closed immediately upon reaching target EV or timeout across all 7 Sports disciplines and ESports.
+   - **Estrategia V (AMM Sniping & Binary Parity Arbitrage)**: Detects terminal binary parity arbitrage (`Ask(YES) + Ask(NO) < 1.00 - fees`), generating atomic `DualBuyProposal` for concurrent execution.
+4. **Continuous Orchestrator (`orquestadores_principales/HFT_BINANCE.py`)**:
+   - Unifies all phases, feeds, risk checks, telegram controls, and cloud state in an asynchronous event loop with clean shutdown guarantees.
 
 ---
 
 ## Code Layout & Write Boundaries
-To ensure strict isolation between concurrent subagents, file ownership is allocated as follows:
 
 | Path / Module | Purpose | Owner Milestone |
 |---|---|---|
-| `conectores/binance_async.py` | Binance WebSocket L2 depth & REST execution client | M1 |
-| `continuitis/microestructura_binance.py` | L2 Book Imbalance, Latency Guard, Golden Rules 1, 2, 3 | M1 |
-| `continuitis/riesgo_binance.py` | EV calculation, Stop-loss sizing, $0.85^n$ streak attenuation, 15% cluster cap, Top-3 BIDs liquidity limit | M2 |
-| `continuitis/tesoreria.py` | "Ordeño e Inyección" ($10 \to 100 \to 1,000$ USD), +$100 event, monthly 40/60 split, 35% MXN harvest | M2 |
-| `continuitis/auditor_metricas.py` | Continuous metrics ($WR, B_N, ROI, \text{Yield}, N$) and $p$-value validation | M2 |
-| `estrategias/hft_engine.py` | 4-Phase HFT logic, Strategy A (Time Decay), Strategy B (Overreaction Hunting) across 7 sports | M3 |
-| `estrategias/swing_engine.py` | Complementary orthogonal swing trading engine | M3 |
-| `conectores/telegram_bidireccional.py` | Interactive Telegram bot with `/kill`, `/pause`, `/resume`, `/risk`, `/report`, and `MockTelegramClient` | M4 |
-| `orquestadores_principales/HFT_BINANCE.py` | Main continuous async orchestrator integrating all modules | M4 |
-| `pruebas_unitarias/` & `tests/` | Comprehensive test suites (`test_hft.py`, `test_tesoreria.py`, `test_telegram_control.py`, `test_concurrencia.py`, `test_golden_rules.py`) | E2E Testing Track |
+| `continuitis/state_registry.py` | Cloud Memorystore (Redis) & Cloud Bigtable state manager, `cola_partidos_pendientes` | M1 |
+| `continuitis/financiero.py` | Cluster controller refactored to read pending queue from `StateRegistry` | M1 |
+| `continuitis/memoria_hft.py` | In-memory HFT store refactored to remove local sqlite3 dependencies | M1 |
+| `Dockerfile` & `requirements.txt` | Container definition with non-root appuser and Redis environment variables | M1 |
+| `continuitis/riesgo_binance.py` | Kelly Criterion, Real Position Sizing, 4-decimal precision, streak attenuation, cluster cap | M2 |
+| `continuitis/tesoreria.py` | Growth acceleration ($10 \to 100 \to 1000$), autonomous harvesting (35% MXN isolation) | M2 |
+| `continuitis/auditor_metricas.py` | 4-decimal analytical metrics (WR, B_N, ROI, Yield, N) and Z-score statistical gate | M2 |
+| `pruebas_unitarias/test_r2_exactitud_financiera.py` | Acceptance tests for R2 financial formulas and $1,000 harvesting demonstration | M2 |
+| `estrategias/hft_engine.py` | 4-Phase HFT logic, Strategy A/B, Multispot & ESports, Phase 3 oracle hook | M3 |
+| `estrategias/arbitraje_amm.py` | Strategy V AMM curve deviation & binary parity with `DualBuyProposal` | M3 |
+| `orquestadores_principales/HFT_BINANCE.py` | Main orchestrator with `_vigilar_y_cerrar_posiciones_abiertas` EV exits, T-5m cleanup | M3 |
+| `TEST_INFRA.md`, `TEST_READY.md`, `pruebas_unitarias/` | Comprehensive test infrastructure, E2E acceptance suites Tiers 1-4 | E2E Testing Track |
 
 ---
 
 ## Feature Inventory
-Every feature identified during the Survey phase is mapped to an implementation milestone.
+
+Every required feature is mapped to an implementation milestone:
 
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | `conectar_orderbook_ws` | WebSocket client for Binance L2 depth channel with auto-reconnect | M1 | Survey / PLANnew §3 |
-| 2 | `actualizar_libro` | In-RAM $\mathcal{O}(1)$ depth maintainer for top 5-10 bids/asks | M1 | Survey / PLANnew §3 |
-| 3 | `detectar_estado_mercado` | Golden Rule 2: Lock new orders immediately when MarketStatus is SUSPENDED | M1 | Survey / GR2 |
-| 4 | `OrderBookImbalance` calculation | $I = \frac{\sum V_{\text{Bid}} - \sum V_{\text{Ask}}}{\sum V_{\text{Bid}} + \sum V_{\text{Ask}}}$, $80\%$ buy dominance $\iff I \ge 0.60$ | M1 | Survey / PLANnew §3 |
-| 5 | Golden Rule 1: Max Spread Filter | Reject any order if Spread (Best Ask - Best Bid) $> \$0.03$ | M1 | Survey / GR1 |
-| 6 | Latency Monitor & Circuit Breaker | Monitor feed heartbeat; trigger emergency state if latency $> 800\text{ ms}$ | M1 | Survey / PLANnew §3 |
-| 7 | Expected Value ($EV > 0$) Calculation | $EV = (P_{\text{estimada}} \times \text{Cuota}_{\text{neta}}) - 1.0 \ge 0.015$ net of BNB fee discounts | M2 | Survey / PLANnew §3 |
-| 8 | Real Position Sizing | $S_{\text{nominal}} = \frac{B \times \text{pct\_riesgo\_fijo} \times \text{factor\_racha}}{\max(\text{pct\_stop\_loss}, 0.01)}$ | M2 | Survey / PLANnew §3 |
-| 9 | Losing Streak Attenuation Factor | $\text{factor\_racha} = 0.85^{\text{perdidas\_consecutivas}}$, reset to 1.0 on win | M2 | Survey / PLANnew §3 |
-| 10 | Cluster Exposure Cap (15%) | Cap total simultaneously active cluster exposure to $\le 15\%$ of bankroll | M2 | Survey / PLANnew §3 |
-| 11 | Golden Rule 3: Top-3 BID Liquidity Ceiling | Bound position size to $\le \sum_{k=1}^3 V_{\text{Bid}}^{(k)}$ to guarantee emergency market sell liquidity | M2 | Survey / GR3 |
-| 12 | Treasury: $10 \to \$100$ Injection Gate | Authorize $+100\text{ USD}$ injection when balance crosses $\$100$, gated by paper trading validation | M2 | Survey / PLANnew §3, §5 |
-| 13 | Treasury: Acceleration 40/60 Split | Monthly settlement: 40% operating expenses, 60% compound reinvestment | M2 | Survey / PLANnew §3 |
-| 14 | Treasury: $\$1,000$ Autonomous Harvesting | At balance $\ge \$1,000$, harvest 35% monthly profit to MXN; remaining split 40/60 | M2 | Survey / PLANnew §3 |
-| 15 | Continuous Analytical Metrics Auditor | Exact calculations for Win Rate ($WR$), Accumulated Capital ($B_N$), ROI, Yield on turnover, and Total Trades ($N$) | M2 | Survey / PLANnew §4 |
-| 16 | Statistical Validation Gate | $Z$-score and $p$-value ($p < 0.05, Z > 1.645$) for trade validation before real capital injection | M2 | Survey / PLANnew §5 |
-| 17 | HFT Phase 1 OBI Entry & Fast Exit | Maker Limit Buy at Best Bid + 1 tick when $I \ge 0.60$; exit Limit Sell at Best Ask + 2 ticks with 2-10s timeout | M3 | Survey / PLANnew §3 |
-| 18 | HFT Phase 2 Pre-Match Transition | Atomic order cancellation (`limpiar_mesa`) at T-5m; convert trapped fills via Market Sell | M3 | Survey / PLANnew §3 |
-| 19 | HFT Phase 3 In-Play Latency Sniping | Sniping real-world events before book suspension; immediate exit upon book resumption | M3 | Survey / PLANnew §3 |
-| 20 | HFT Phase 4 Time Decay Scalping | Enter draw matches with zero dangerous attacks between min 75-90; hold 60-90s and market exit | M3 | Survey / PLANnew §3 |
-| 21 | Strategy A: Time Decay Exploitation | Low-risk scalp min 65-70 in stagnant games; buy current Draw/Result share, hold 3-5 min, exit before end | M3 | Survey / Directive 2 |
-| 22 | Strategy B: Overreaction Hunting | High-risk scalp on panic crash against dominant favorite (xG/possession dominance); buy dip, sell on speculative rebound | M3 | Survey / Directive 3 |
-| 23 | Multi-Sport Market Coverage | Universal scanning across 7 sports (Soccer, Baseball, Football, Basketball, Tennis, Hockey, eSports) | M3 | Survey / Directive 1 |
-| 24 | Parallel Orthogonal Swing Trading Engine | Concurrent multi-hour/daily swing execution running alongside HFT without event loop contention | M3 | Survey / R1 |
-| 25 | Interactive Telegram Bot Client | Bidirectional Telegram bot with inline keyboard, command router, and push notifications | M4 | Survey / R3 |
-| 26 | Telegram Kill Switch Remote Command | Instant `/kill` command triggering emergency stop, order cancellation, and loop pause | M4 | Survey / R3 |
-| 27 | Telegram Pause / Resume Controls | Remote `/pause` and `/resume` controls for trading execution | M4 | Survey / R3 |
-| 28 | Telegram Hot Risk Parameter Adjustment | Remote `/risk <param> <val>` updating parameters in hot memory | M4 | Survey / R3 |
-| 29 | Telegram Telemetry Metrics Report | Remote `/report` and `/metricas` formatting real-time metrics | M4 | Survey / R3 |
-| 30 | MockTelegramClient Test Interface | Mock client simulating user interactions for automated test verification | M4 | Survey / Acceptance Criteria |
-| 31 | Continuous Main Orchestrator | Complete integration in `HFT_BINANCE.py` coordinating all tasks, feeds, risk, and control loops | M4 | Survey / R1-R3 |
-| 32 | End-to-End Test Suite & Verification | Pass 100% of E2E test suite (Tiers 1-4) published in `TEST_READY.md` and adversarial hardening | M5 | Survey / Acceptance Criteria |
-| 33 | Estrategia V: Dynamic Cross-Venue Arbitrage & AMM Sniping | Arbitrage curve deviations, binary parity (YES+NO < 1.00 - fee), 2-15s scalp horizon, 15% cap, LatencyGuard abort | M6 | Directive 2026-10-07T08:38:51Z |
+| 1 | `StateRegistry` Redis Memorystore | Sub-microsecond live state caching (<50ns) via `REDIS_HOST`/`REDIS_PORT` with in-memory fallback | M1 | R1 / Acceptance Criterion 2 |
+| 2 | `cola_partidos_pendientes` in Redis | Manage pending match queue (`encolar_partido`, `obtener_partidos_pendientes`, `cerrar_partido`) | M1 | R1 |
+| 3 | Cloud Bigtable Historical Archival | Reverse-timestamp row keys (`{symbol}#{Long.MAX_VALUE - timestamp_micros:019d}#{seq_id:010d}`) | M1 | R1 |
+| 4 | Elimination of `sqlite3` Dependencies | Complete removal of local database files (`continuity_state.db`, `hft.db`, `cerebrillum.db`) | M1 | R1 |
+| 5 | Docker Crash Loop Resolution | Container boots stably without `sqlite3.OperationalError` under non-root UID 10001 | M1 | R1 / Acceptance Criterion 1 |
+| 6 | Kelly Criterion (`calcular_criterio_kelly`) | Formula $f^* = \text{fraccion} \times ((p(b+1)-1)/b)$ with bounded fraction and 4-decimal output | M2 | R2 |
+| 7 | Real Position Sizing ($S_{\text{nominal}}$) | Sizing modulated by streak factor $0.85^n$, 15% cluster cap, and Top-3 BIDs liquidity limit | M2 | R2 |
+| 8 | 4-Decimal Precision (`0.0001`) | All financial metrics (Win Rate, EV, ROI, Yield, Stake, Capital) guaranteed to 4 decimals | M2 | R2 / Acceptance Criterion 4 |
+| 9 | Acceleration Cycle ($10 \to 100 \to 1,000$) | Dynamic growth cycle with statistical validation gate ($N \ge 300, p < 0.05$) | M2 | R2 |
+| 10 | Autonomous Harvesting Protocol | At balance $\ge \$1,000$ USD, automatically isolates 35% net profit to MXN, 40% expenses, 60% reinvestment | M2 | R2 / Acceptance Criterion 3 |
+| 11 | Financial Test Verification Script | `test_r2_exactitud_financiera.py` demonstrating $1,000 balance 35% net profit isolation and 4-decimal unit tests | M2 | R2 / Acceptance Criteria 3, 4 |
+| 12 | HFT Phase 1: Pre-Match OBI Scalping | Maker limit entry at Best Bid + 1 tick when $I \ge 0.60$ and spread $\le \$0.03$ with fast target exit | M3 | R3 |
+| 13 | HFT Phase 2: T-5m `limpiar_mesa` | Programmatic verification of total order cancellation at T-5m with verified 0% exposure | M3 | R3 / Acceptance Criterion 5 |
+| 14 | HFT Phase 3: In-Play Latency Sniping | Oracle latency sniping before book suspension (`MarketStatus: SUSPENDED`) | M3 | R3 |
+| 15 | HFT Phase 4: Time Decay Scalp | Draw contract scalp between min 75-90 with 60-90s exit without waiting for match conclusion | M3 | R3 |
+| 16 | Pre-Match & In-Play Target EV Early Exits | `_vigilar_y_cerrar_posiciones_abiertas`: close positions pre-match and in-play upon reaching target EV across Sports & ESports | M3 | User Update 2026-10-10T18:00:42Z |
+| 17 | Strategy V: Binary Parity Arbitrage | Detect `Ask(YES) + Ask(NO) < 1.00 - fees` and generate atomic `DualBuyProposal` | M3 | R3 / Acceptance Criterion 6 |
+| 18 | Strategy V: AMM Curve Inefficiencies | Arbitrage curve deviations against $P_{\text{fair}}$ with 2-15s scalp horizon and 15% cap | M3 | R3 |
+| 19 | Orchestrator Concurrency & Integration | Restore full orchestrator compliance in `HFT_BINANCE.py` (capital gateway, swing, amm engines) | M3 | R3 |
+| 20 | E2E Test Suite & Adversarial Hardening | Pass 100% of E2E test suite (Tiers 1-4) and adversarial coverage hardening (Tier 5) | M4 | Final Milestone |
 
 ---
 
@@ -83,81 +75,67 @@ Every feature identified during the Survey phase is mapped to an implementation 
 
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Ingestion, Connectors & Microstructure Core | `conectores/binance_async.py`, `continuitis/microestructura_binance.py`: WebSocket L2 depth, Binance REST client, OBI calculation ($I \ge 0.60$), Golden Rule 1 (Spread $\le \$0.03$), Golden Rule 2 (Suspended lock), Golden Rule 3 (Top 3 BIDs liquidity calculation), Latency monitor (<800ms) | none | DONE |
-| M2 | Risk Engine, Automated Treasury & Metrics Auditor | `continuitis/riesgo_binance.py`, `continuitis/tesoreria.py`, `continuitis/auditor_metricas.py`: EV calculation ($EV \ge 0.015$), Stop-loss sizing, $0.85^n$ streak attenuation, 15% cluster cap, Top-3 BIDs liquidity clamping, "Ordeño e Inyección" ($10 \to 100 \to 1,000$ USD), +$100 event trigger, 40/60 split, 35% MXN harvest, metrics ($WR, B_N, ROI, \text{Yield}, N$) and $p$-value validation | none | DONE |
-| M3 | Trading Strategies (HFT + Swing) & Concurrency Pipeline | `estrategias/hft_engine.py`, `estrategias/swing_engine.py`: 4-Phase HFT logic, Strategy A (Time Decay), Strategy B (Overreaction Hunting) across 7 sports, Orthogonal Swing Engine, Non-blocking concurrent execution pipeline | M1, M2 | DONE |
-| M4 | Interactive Telegram Bot & Main Continuous Orchestrator | `conectores/telegram_bidireccional.py`, `orquestadores_principales/HFT_BINANCE.py`: Bidirectional Telegram bot, `/kill`, `/pause`, `/resume`, `/risk`, `/report`, `MockTelegramClient`, main continuous orchestrator coordinating all pipelines, GCP Tokyo low-latency deployment manifests | M2, M3 | DONE |
-| M6 | Estrategia V: Dynamic Arbitrage & AMM Sniping | `estrategias/arbitraje_amm.py`: Binary parity detection ($Ask(YES) + Ask(NO) < 1.00 - fees$), fair price curve deviation arbitrage, 2-15s scalp horizon, 15% cluster cap, LatencyGuard/Suspended abort | M1, M2 | DONE |
-| M5 | E2E Integration, Full Verification & Adversarial Hardening | Phase 1: Pass 100% of E2E test suite from `TEST_READY.md` (all suites including M6). Phase 2: Adversarial coverage hardening (Tier 5) with Challenger. | M4, M6, TEST_READY.md | DONE |
+| M1 | GCP State Migration & SQLite Elimination | `continuitis/state_registry.py`, `continuitis/financiero.py`, `continuitis/memoria_hft.py`, `Dockerfile`, `requirements.txt`: Cloud Memorystore (Redis), Cloud Bigtable, `cola_partidos_pendientes`, Docker crash-loop fix | none | IN_PROGRESS |
+| M2 | Autonomous Treasury & Financial Engine | `continuitis/riesgo_binance.py`, `continuitis/tesoreria.py`, `continuitis/auditor_metricas.py`, `pruebas_unitarias/test_r2_exactitud_financiera.py`: Kelly criterion, 4-decimal precision, $1,000 balance 35% MXN harvesting isolation | none | IN_PROGRESS |
+| M3 | 4 HFT Phases, Strategy V & EV-Driven Exits | `orquestadores_principales/HFT_BINANCE.py`, `estrategias/hft_engine.py`, `estrategias/arbitraje_amm.py`: Pre-match & In-play EV exits (`_vigilar_y_cerrar_posiciones_abiertas`), Phase 2 T-5m 0% exposure, Strategy V `DualBuyProposal`, Sports & ESports | M1, M2 | PLANNED |
+| M4 | Final Milestone: 100% E2E Pass & Adversarial Hardening | Execute full test suite against all acceptance criteria (Tiers 1-4) and Tier 5 adversarial coverage hardening | M1, M2, M3, TEST_READY.md | PLANNED |
+| E2E | E2E Testing Track | `TEST_INFRA.md`, `TEST_READY.md`, test suites covering Features 1-19 | none | IN_PROGRESS |
 
 ---
 
 ## Interface Contracts
 
-### 1. Ingestion (`conectores/binance_async.py`) $\leftrightarrow$ Microstructure (`continuitis/microestructura_binance.py`)
+### 1. State Registry (`continuitis/state_registry.py`)
 ```python
-@dataclass(frozen=True)
-class OrderBookSnapshot:
-    symbol: str
-    bids: Tuple[Tuple[float, float], ...]  # Tuple of (price, volume), sorted descending
-    asks: Tuple[Tuple[float, float], ...]  # Tuple of (price, volume), sorted ascending
-    timestamp_ms: int
-    market_status: str  # "ACTIVE" or "SUSPENDED"
-
-class BinanceConnectorProtocol(Protocol):
-    async def get_orderbook_snapshot(self, symbol: str) -> OrderBookSnapshot: ...
-    async def place_order(self, symbol: str, side: str, order_type: str, price: float, quantity: float) -> dict: ...
-    async def cancel_order(self, symbol: str, order_id: str) -> dict: ...
-    async def cancel_all_orders(self, symbol: str) -> list: ...
+class StateRegistryProtocol(Protocol):
+    def get_state(self, key: str, default: str = "") -> str: ...
+    def set_state(self, key: str, value: str) -> None: ...
+    def encolar_partido(self, partido_id: str, payload: dict) -> None: ...
+    def obtener_partidos_pendientes(self) -> List[dict]: ...
+    def cerrar_partido(self, partido_id: str, trade_result: Optional[dict] = None) -> None: ...
+    def record_trade(self, trade_id: str, symbol: str, pnl: float, is_win: bool, timestamp: float, stake: float = 0.0) -> None: ...
+    def get_recent_trades(self, limit: int = 100) -> List[Dict[str, Any]]: ...
 ```
 
-### 2. Microstructure $\leftrightarrow$ Risk Engine (`continuitis/riesgo_binance.py`)
+### 2. Risk Engine & Treasury (`continuitis/riesgo_binance.py`, `continuitis/tesoreria.py`)
 ```python
-@dataclass(frozen=True)
-class OrderProposal:
-    symbol: str
-    side: str
-    target_price: float
-    stop_price: float
-    estimated_prob: float
-    payout_decimal: float
-    strategy_id: str
-
-@dataclass(frozen=True)
-class RiskApprovedOrder:
-    symbol: str
-    side: str
-    price: float
-    quantity: float
-    ev_net: float
-    approved: bool
-    rejection_reason: Optional[str] = None
-```
-
-### 3. Risk Engine $\leftrightarrow$ Treasury & Metrics (`continuitis/tesoreria.py` & `continuitis/auditor_metricas.py`)
-```python
-@dataclass
-class TradeResult:
-    trade_id: str
-    symbol: str
-    stake: float
-    pnl: float
-    is_win: bool
-    timestamp: float
+class RiskEngineProtocol(Protocol):
+    def calcular_criterio_kelly(self, p_estimada: float, cuota_neta: float, fraccion_kelly: float = 0.25) -> float: ...
+    def calcular_posicion(self, balance: float, cuota_bruta: float, p_estimada: float, ...) -> Dict[str, Any]: ...
 
 class TreasuryProtocol(Protocol):
+    def ejecutar_cosecha_autonoma(self, ganancia_neta: Optional[float] = None, tipo_cambio_mxn: Optional[float] = None) -> Dict[str, Any]: ...
+    def verificar_hitos(self, auto_cosechar: bool = True) -> Dict[str, Any]: ...
     def registrar_trade(self, trade: TradeResult) -> None: ...
-    def verificar_hitos(self) -> dict: ...
-    def corte_mensual(self, ganancia_mensual: float) -> dict: ...
-
-class MetricsAuditorProtocol(Protocol):
-    def registrar_trade(self, trade: TradeResult) -> None: ...
-    def obtener_metricas(self) -> dict: ...  # {"win_rate": float, "capital_acumulado": float, "roi": float, "yield": float, "total_trades": int}
 ```
 
-### 4. Orchestrator $\leftrightarrow$ Telegram Bot (`conectores/telegram_bidireccional.py`)
+### 3. Strategy V & AMM Engine (`estrategias/arbitraje_amm.py`)
 ```python
-class TelegramControlProtocol(Protocol):
-    async def notify(self, message: str) -> None: ...
-    def register_command_handlers(self, kill_switch_cb, pause_cb, resume_cb, risk_update_cb, query_metrics_cb) -> None: ...
+@dataclass(frozen=True)
+class DualBuyProposal:
+    proposal_id: str
+    event_id: str
+    symbol_yes: str
+    symbol_no: str
+    price_yes: float
+    price_no: float
+    quantity: float
+    sum_asks: float
+    fees_total: float
+    net_edge: float
+    order_yes: OrderProposal
+    order_no: OrderProposal
+    timestamp: float = field(default_factory=time.time)
+
+class ArbitrageEngineProtocol(Protocol):
+    def detectar_paridad_binaria(self, snap_yes: OrderBookSnapshot, snap_no: OrderBookSnapshot, ...) -> Optional[ArbitrageSignal]: ...
+    def detectar_desviacion_curva(self, snapshot: OrderBookSnapshot, p_fair: float, ...) -> Optional[ArbitrageSignal]: ...
+```
+
+### 4. Orchestrator Target EV Exits (`orquestadores_principales/HFT_BINANCE.py`)
+```python
+class OrchestratorProtocol(Protocol):
+    async def _vigilar_y_cerrar_posiciones_abiertas(self, symbol: str, snapshot: OrderBookSnapshot) -> List[TradeResult]: ...
+    async def step_hft_cycle(self, symbol: str) -> Optional[Any]: ...
+    async def step_amm_cycle(self, event_id: str) -> Optional[Any]: ...
 ```

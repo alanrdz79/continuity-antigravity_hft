@@ -484,9 +484,14 @@ class HFTEngine:
         total_volumen_liquidado: float = 0.0
 
         # 1. Cancelación atómica de órdenes pendientes del símbolo
-        ordenes_a_borrar = [oid for oid, ord_obj in self.pending_orders.items() if ord_obj.symbol == symbol]
+        ordenes_a_borrar = [
+            oid for oid, ord_obj in self.pending_orders.items()
+            if ord_obj is None or getattr(ord_obj, "symbol", symbol) == symbol
+        ]
         for oid in ordenes_a_borrar:
-            self.pending_orders[oid].status = "CANCELLED"
+            ord_obj = self.pending_orders.get(oid)
+            if ord_obj is not None:
+                ord_obj.status = "CANCELLED"
             ordenes_canceladas.append(oid)
             del self.pending_orders[oid]
 
@@ -1351,6 +1356,22 @@ class HFTEngine:
         """
         symbol = snapshot.symbol
 
+        # Regla de Oro 2: Mercado suspendido por Binance (bloqueo instantáneo)
+        market_status = getattr(snapshot, "market_status", "ACTIVE")
+        if str(market_status).upper() == "SUSPENDED":
+            return HftSignal(
+                symbol=symbol,
+                action="NO_ACTION",
+                strategy_id="NONE",
+                phase="BLOQUEO_SUSPENDIDO",
+                price=0.0,
+                quantity=0.0,
+                estimated_prob=0.0,
+                payout_decimal=0.0,
+                reason="MERCADO_SUSPENDIDO_BINANCE (Regla de Oro 2 activada)",
+                authorized=False,
+            )
+
         # 1. Caso Pre-Match: Fase 2 (limpiar_mesa) a T-5m o menos
         if match_state.time_to_kickoff_minutes is not None:
             if match_state.time_to_kickoff_minutes <= 5.0:
@@ -1376,6 +1397,20 @@ class HFTEngine:
 
         # 2. Caso In-Play
         if match_state.is_live:
+            # 0. Fase 3: In-Play Latency Sniping ante evento oracular reciente (<3.0s)
+            if match_state.last_event and match_state.last_event_timestamp and (time.time() - match_state.last_event_timestamp <= 3.0):
+                sig_fase3 = self.snipe_desfase_oraculo(
+                    event_type=match_state.last_event,
+                    event_timestamp=match_state.last_event_timestamp,
+                    snapshot=snapshot,
+                    match_state=match_state,
+                    balance=balance,
+                    operaciones_activas=operaciones_activas,
+                    exposicion_cluster=exposicion_cluster,
+                )
+                if sig_fase3.authorized or "SUSPENDIDO" in sig_fase3.reason.upper():
+                    return sig_fase3
+
             # Primero: Revisar salidas de rebote en Estrategia B si hubo jugada peligrosa
             salidas_b = self.evaluar_salida_rebote_estrategia_b(symbol, match_state, snapshot)
             if salidas_b:

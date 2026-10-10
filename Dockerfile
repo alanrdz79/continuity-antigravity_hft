@@ -39,7 +39,10 @@ COPY --chown=appuser:appuser . /app
 
 USER appuser
 
-ENV PORT=8080
+ENV PORT=8080 \
+    REDIS_HOST="" \
+    REDIS_PORT=6379 \
+    REDIS_SSL=false
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

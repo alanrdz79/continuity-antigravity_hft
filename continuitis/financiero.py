@@ -563,10 +563,11 @@ class ControladorCluster:
 
     @staticmethod
     def factor_cluster(
-        db_path: str,
-        bankroll: float,
-        stake_propuesto: float,
+        db_path: str = DATABASE_URL,
+        bankroll: float = 1000.0,
+        stake_propuesto: float = 0.0,
         hora_partido: str = None,
+        state_registry: object = None,
     ) -> float:
         """
         Calcula factor multiplicador â (0.0, 1.0] para reducir orgÃ¡nicamente
@@ -592,9 +593,9 @@ class ControladorCluster:
         float â [0.0, 1.0] â multiplicador sobre el stake.
         1.0 = sin reducciÃ³n, 0.0 = no apostar (techo ya saturado).
         """
-        import sqlite3
         import json
         from datetime import datetime, timedelta
+        from .state_registry import StateRegistry
 
         bankroll = _safe_float(bankroll) or 1000.0
         stake_propuesto = _safe_float(stake_propuesto) or 0.0
@@ -615,17 +616,15 @@ class ControladorCluster:
         ventana_inicio = centro - timedelta(hours=CLUSTER_VENTANA_HORAS / 2)
         ventana_fin    = centro + timedelta(hours=CLUSTER_VENTANA_HORAS / 2)
 
-        # Consultar partidos pendientes no cerrados
+        # Consultar partidos pendientes no cerrados vía StateRegistry (Redis / Mock)
         exposicion_actual = 0.0
         try:
-            conn = sqlite3.connect(db_path)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT payload_json FROM cola_partidos_pendientes WHERE cerrado = 0"
-            )
-            for (payload_raw,) in cur.fetchall():
+            registry = state_registry if state_registry is not None else StateRegistry()
+            partidos_pendientes = registry.obtener_partidos_pendientes()
+            for payload in partidos_pendientes:
                 try:
-                    payload = json.loads(payload_raw)
+                    if isinstance(payload, str):
+                        payload = json.loads(payload)
                     stake_pendiente = _safe_float(payload.get("stake", 0.0)) or 0.0
                     fecha_str = payload.get("timestamp", "")
                     if fecha_str:
@@ -634,16 +633,15 @@ class ControladorCluster:
                             if ventana_inicio <= fecha_partido <= ventana_fin:
                                 exposicion_actual += stake_pendiente
                         except (ValueError, TypeError):
-                            # Sin fecha parseable, asumimos que estÃ¡ en ventana
-                            # (principio de precauciÃ³n)
+                            # Sin fecha parseable, asumimos que está en ventana
+                            # (principio de precaución)
                             exposicion_actual += stake_pendiente
                     else:
                         exposicion_actual += stake_pendiente
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError, AttributeError):
                     continue
-            conn.close()
-        except sqlite3.Error:
-            # Si no se puede leer la DB, no reducir (fail-open conservador)
+        except Exception:
+            # Si no se puede leer el registro de estado, no reducir (fail-open conservador)
             return 1.0
 
         # Calcular factor de reducciÃ³n

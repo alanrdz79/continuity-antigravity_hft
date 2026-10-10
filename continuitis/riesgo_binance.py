@@ -65,6 +65,46 @@ class RiskApprovedOrder:
 
 
 # ==============================================================================
+# FÓRMULAS MATEMÁTICAS PURAS: CRITERIO DE KELLY (PROJECT.md & PLANnew.md §3)
+# ==============================================================================
+def calcular_criterio_kelly(
+    p_estimada: float,
+    cuota_neta: float,
+    fraccion_kelly: float = 0.25,
+) -> float:
+    """
+    Calcula la fracción óptima de Kelly según PROJECT.md y PLANnew.md §3:
+      f* = fraccion_kelly * ((p * (b + 1) - 1) / b)
+    donde b = cuota_neta - 1.0 (ganancia neta por unidad apostada).
+
+    Acota la fracción estrictamente dentro de [0.0, 0.25] y retorna un float
+    con precisión a 4 decimales.
+    """
+    if (
+        math.isnan(p_estimada)
+        or math.isinf(p_estimada)
+        or math.isnan(cuota_neta)
+        or math.isinf(cuota_neta)
+    ):
+        return 0.0
+
+    if cuota_neta <= 1.0 or p_estimada <= 0.0:
+        return 0.0
+
+    b = cuota_neta - 1.0
+    ev = (p_estimada * cuota_neta) - 1.0
+    if ev <= 0.0:
+        return 0.0
+
+    kelly_puro = ev / b
+    frac_val = max(0.0, float(fraccion_kelly))
+    kelly_frac = frac_val * kelly_puro
+    # Acotado estrictamente dentro de [0.0, 0.25]
+    f_star = max(0.0, min(0.25, kelly_frac))
+    return round(float(f_star), 4)
+
+
+# ==============================================================================
 # CLASE PRINCIPAL: EscudoFinancieroBinance
 # ==============================================================================
 class EscudoFinancieroBinance:
@@ -156,6 +196,50 @@ class EscudoFinancieroBinance:
         """
         return float((p_estimada * cuota_neta) - 1.0)
 
+    def calcular_criterio_kelly(
+        self,
+        p_estimada: float,
+        cuota_neta: float,
+        fraccion_kelly: float = 0.25,
+    ) -> float:
+        """
+        Calcula la fracción óptima de Kelly según PROJECT.md y PLANnew.md §3:
+          f* = fraccion_kelly * ((p * (b + 1) - 1) / b)
+        donde b = cuota_neta - 1.0 (ganancia neta por unidad apostada).
+
+        Retorna la fracción f* acotada en [0.0, 0.25] redondeada a 4 decimales.
+        """
+        return calcular_criterio_kelly(
+            p_estimada=p_estimada,
+            cuota_neta=cuota_neta,
+            fraccion_kelly=fraccion_kelly,
+        )
+
+    def evaluar_target_ev_salida(
+        self,
+        precio_entrada: float,
+        precio_actual_bid: float,
+        ev_objetivo_minimo: float = 0.02,
+    ) -> Dict[str, Any]:
+        """
+        Audita si una posición abierta (Pre-match o In-play en Deportes o ESports)
+        ha cumplido su Valor Esperado objetivo para ejecutar salida temprana sin
+        esperar la liquidación final del evento deportivo.
+        """
+        if precio_entrada <= 0.0:
+            return {"cerrar_posicion": False, "motivo": "Precio de entrada inválido"}
+
+        fee = self.tasa_comision_efectiva
+        retorno_neto = ((precio_actual_bid * (1.0 - fee)) - precio_entrada) / precio_entrada
+
+        cumple_ev = retorno_neto >= ev_objetivo_minimo
+        return {
+            "cerrar_posicion": cumple_ev,
+            "retorno_neto": round(retorno_neto, 4),
+            "ev_objetivo": round(ev_objetivo_minimo, 4),
+            "motivo": "TARGET_EV_ALCANZADO" if cumple_ev else "EV_PENDIENTE",
+        }
+
     # --------------------------------------------------------------------------
     # 2. EVALUACIÓN Y DIMENSIONAMIENTO DIRECTO (COMPATIBLE CON PLANnew)
     # --------------------------------------------------------------------------
@@ -169,6 +253,8 @@ class EscudoFinancieroBinance:
         exposicion_cluster_actual: float = 0.0,
         top_3_bid_volumen: Optional[float] = None,
         precio_contrato: Optional[float] = None,
+        usar_kelly: bool = False,
+        fraccion_kelly: float = 0.25,
     ) -> Dict[str, Any]:
         """
         Calcula el stake y evalúa la viabilidad de la operación según todas las reglas.
@@ -181,6 +267,9 @@ class EscudoFinancieroBinance:
           operaciones_activas: Cantidad de operaciones activas en el clúster.
           exposicion_cluster_actual: Capital monetario actualmente comprometido en el clúster.
           top_3_bid_volumen: Volumen total disponible en los primeros 3 niveles de BID (Regla de Oro 3).
+          precio_contrato: Precio unitario del contrato (opcional).
+          usar_kelly: Si True, dimensiona el stake usando la fracción óptima de Kelly.
+          fraccion_kelly: Fracción de Kelly (default 0.25).
 
         Retorna:
           dict con {
@@ -193,10 +282,37 @@ class EscudoFinancieroBinance:
              "factor_racha": float,
              "consecutive_losses": int,
              "clamped_by_cluster": bool,
-             "clamped_by_liquidity": bool
+             "clamped_by_liquidity": bool,
+             "f_star_kelly": float
           }
         """
+        if (
+            math.isnan(p_estimada)
+            or math.isinf(p_estimada)
+            or math.isnan(cuota)
+            or math.isinf(cuota)
+            or math.isnan(balance_actual)
+            or math.isinf(balance_actual)
+            or math.isnan(pct_stop_loss)
+            or math.isinf(pct_stop_loss)
+        ):
+            return {
+                "operar": False,
+                "motivo": "PROBABILIDAD_O_CUOTA_INVALIDA",
+                "ev": 0.0,
+                "cuota_neta": 0.0,
+                "stake": 0.0,
+                "riesgo_monetario": 0.0,
+                "factor_racha": 1.0,
+                "consecutive_losses": self.consecutive_losses,
+                "clamped_by_cluster": False,
+                "clamped_by_liquidity": False,
+                "f_star_kelly": 0.0,
+            }
+
         balance = max(0.0, float(balance_actual))
+        f_star_kelly = round(self.calcular_criterio_kelly(p_estimada, self.calcular_cuota_neta(cuota), fraccion_kelly), 4)
+
         if balance <= 0.0:
             return {
                 "operar": False,
@@ -205,16 +321,19 @@ class EscudoFinancieroBinance:
                 "cuota_neta": 0.0,
                 "stake": 0.0,
                 "riesgo_monetario": 0.0,
-                "factor_racha": self.factor_racha,
+                "factor_racha": round(self.factor_racha, 4),
                 "consecutive_losses": self.consecutive_losses,
                 "clamped_by_cluster": False,
                 "clamped_by_liquidity": False,
+                "f_star_kelly": 0.0,
             }
 
         # 1. Validación de Valor Esperado (EV) con descuento de comisiones BNB
         cuota_neta = self.calcular_cuota_neta(cuota)
         ev = self.calcular_ev(p_estimada, cuota_neta)
-        if ev < self.ev_minimo:
+        f_star_kelly = round(self.calcular_criterio_kelly(p_estimada, cuota_neta, fraccion_kelly), 4)
+
+        if math.isnan(ev) or math.isinf(ev) or ev < self.ev_minimo:
             return {
                 "operar": False,
                 "motivo": f"EV insuficiente ({ev:.4f} < {self.ev_minimo:.4f})",
@@ -226,16 +345,22 @@ class EscudoFinancieroBinance:
                 "consecutive_losses": self.consecutive_losses,
                 "clamped_by_cluster": False,
                 "clamped_by_liquidity": False,
+                "f_star_kelly": f_star_kelly,
             }
 
         # 2. Factor de atenuación por racha negativa (0.85^n)
         factor_racha = self.factor_racha
 
-        # 3. Tamaño de posición real (Position Sizing) en función del Stop Loss
-        # S_nominal = (B * pct_riesgo_fijo * factor_racha) / max(pct_stop_loss, 0.01)
+        # 3. Tamaño de posición real (Position Sizing)
         stop_loss_efectivo = max(float(pct_stop_loss), MIN_PCT_STOP_LOSS)
-        riesgo_objetivo = balance * self.pct_riesgo_fijo * factor_racha
-        posicion_nominal = riesgo_objetivo / stop_loss_efectivo
+        if usar_kelly:
+            # Dimensionamiento mediante Criterio de Kelly modulado por racha
+            posicion_nominal = balance * f_star_kelly * factor_racha
+            riesgo_objetivo = posicion_nominal * stop_loss_efectivo
+        else:
+            # S_nominal = (B * pct_riesgo_fijo * factor_racha) / max(pct_stop_loss, 0.01)
+            riesgo_objetivo = balance * self.pct_riesgo_fijo * factor_racha
+            posicion_nominal = riesgo_objetivo / stop_loss_efectivo
 
         # 4. Modulación por techo de clúster (<= 15% del bankroll)
         max_cluster_capital = balance * self.max_cluster_exp
@@ -269,6 +394,7 @@ class EscudoFinancieroBinance:
                 "consecutive_losses": self.consecutive_losses,
                 "clamped_by_cluster": True,
                 "clamped_by_liquidity": False,
+                "f_star_kelly": f_star_kelly,
             }
 
         # 5. Regla de Oro 3: Acotación dinámica por liquidez en Top 3 BIDs
@@ -289,6 +415,7 @@ class EscudoFinancieroBinance:
                     "consecutive_losses": self.consecutive_losses,
                     "clamped_by_cluster": clamped_cluster,
                     "clamped_by_liquidity": True,
+                    "f_star_kelly": f_star_kelly,
                 }
             if posicion_nominal > v_bid_top3:
                 posicion_nominal = v_bid_top3
@@ -301,12 +428,13 @@ class EscudoFinancieroBinance:
             "motivo": "AUTORIZADO",
             "ev": round(ev, 4),
             "cuota_neta": round(cuota_neta, 4),
-            "stake": round(posicion_nominal, 2),
-            "riesgo_monetario": round(riesgo_real, 2),
+            "stake": round(posicion_nominal, 4),
+            "riesgo_monetario": round(riesgo_real, 4),
             "factor_racha": round(factor_racha, 4),
             "consecutive_losses": self.consecutive_losses,
             "clamped_by_cluster": clamped_cluster,
             "clamped_by_liquidity": clamped_liquidity,
+            "f_star_kelly": f_star_kelly,
         }
 
     # --------------------------------------------------------------------------
@@ -327,6 +455,22 @@ class EscudoFinancieroBinance:
           - float: volumen total ya sumado en los top 3 niveles.
           - lista/tupla de (precio, volumen): suma el volumen o valor nominal de los primeros 3 niveles.
         """
+        if (
+            math.isnan(proposal.estimated_prob)
+            or math.isinf(proposal.estimated_prob)
+            or math.isnan(proposal.payout_decimal)
+            or math.isinf(proposal.payout_decimal)
+        ):
+            return RiskApprovedOrder(
+                symbol=proposal.symbol,
+                side=proposal.side,
+                price=proposal.target_price if not (math.isnan(proposal.target_price) or math.isinf(proposal.target_price)) else 0.0,
+                quantity=0.0,
+                ev_net=0.0,
+                approved=False,
+                rejection_reason="PROBABILIDAD_O_CUOTA_INVALIDA",
+            )
+
         # Calcular cuota bruta a partir de payout_decimal o target_price
         cuota_bruta = proposal.payout_decimal
         if cuota_bruta <= 1.0 and proposal.target_price > 0.0:
@@ -438,3 +582,19 @@ class EscudoFinancieroBinance:
 
 # Instancia o alias conveniente para compatibilidad
 GestorRiesgoBinance = EscudoFinancieroBinance
+
+__all__ = [
+    "EscudoFinancieroBinance",
+    "GestorRiesgoBinance",
+    "OrderProposal",
+    "RiskApprovedOrder",
+    "calcular_criterio_kelly",
+    "BINANCE_SPOT_BASE_FEE",
+    "BNB_DISCOUNT_FACTOR",
+    "BINANCE_BNB_FEE_RATE",
+    "DEFAULT_PCT_RIESGO_FIJO",
+    "DEFAULT_EV_MINIMO",
+    "DEFAULT_MAX_CLUSTER_EXP",
+    "DEFAULT_ATENUACION_RACHA",
+    "MIN_PCT_STOP_LOSS",
+]
