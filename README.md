@@ -1,6 +1,6 @@
 # CONTINUITYEM: High-Frequency Trading (HFT) Sports Exchange Engine
 
-**CONTINUITYEM** es un ecosistema modular de trading algorítmico de alta frecuencia (HFT) diseñado exclusivamente para operar en *exchanges* deportivos (actualmente **Matchbook MX**).
+**CONTINUITYEM** es un ecosistema modular de trading algorítmico de alta frecuencia (HFT) diseñado exclusivamente para operar en *exchanges* deportivos y ESports (actualmente **Matchbook MX y BINANCE PREDICCION**).
 
 Su objetivo principal es la **multiplicación de micro-capitales** (ej. de $100 MXN a $500 MXN al primer mes) explotando ineficiencias milimétricas del mercado mediante arbitraje de *spreads* y apalancamiento matemático agresivo (*Kelly Criterion* + Interés Compuesto).
 
